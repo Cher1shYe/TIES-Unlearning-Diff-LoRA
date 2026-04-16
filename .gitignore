@@ -1,0 +1,23 @@
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environment
+.env
+venv/
+env/
+
+# IDE and System files
+.vscode/
+.idea/
+.DS_Store
+
+# Project specific outputs (adjust if your output folder has a different name)
+output_dir/
+*.log
+*.ckpt
+*.safetensors
+
+# Internal Team Documentation (Optional)
+# Instructions.md
