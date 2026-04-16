@@ -14,10 +14,7 @@ env/
 .DS_Store
 
 # Project specific outputs (adjust if your output folder has a different name)
-output_dir/
-*.log
-*.ckpt
-*.safetensors
+ties_unlearn_results/
 
 # Internal Team Documentation (Optional)
-# Instructions.md
+Instructions.md
