@@ -17,10 +17,10 @@ except ImportError:
 
 # Import project configurations and utilities
 from configs.config import TrainConfig, LoRAConfig
-from data.dataloader import set_seed, make_mnli_loaders, make_hans_loader
+from data.dataloader import set_seed, make_mnli_loaders, make_hans_loader, make_esnli_test_loader
 from models.surgery import inject_ties_unlearn_lora
 from utils.optim_utils import _split_params, _make_scaler, _amp_enabled
-from training.evaluate import eval_mnli, eval_hans
+from training.evaluate import eval_mnli, eval_hans, eval_esnli
 
 def setup_single_lora_model(cfg: TrainConfig, device):
     """Helper function: Initialize a standard single-LoRA model and its corresponding optimizer."""
@@ -68,6 +68,7 @@ def train_jtt_baseline(cfg: TrainConfig):
     # Modified make_mnli_loaders to return the dataset
     train_loader, val_loader, train_dataset = make_mnli_loaders(cfg, tok, return_dataset=True)
     hans_loader = make_hans_loader(cfg, tok)
+    esnli_loader = make_esnli_test_loader(cfg, tok)
 
     # ──────────────────────────────────────────────────────────
     # [Phase 1] Train the temporary identification model, matched to phase1_epochs from unlearn config
@@ -165,11 +166,13 @@ def train_jtt_baseline(cfg: TrainConfig):
     print("\n>>> [Final] Evaluating JTT Model...")
     jtt_mnli = eval_mnli(model_robust, val_loader, device)
     jtt_hans = eval_hans(model_robust, hans_loader, device)
+    jtt_esnli = eval_esnli(model_robust, esnli_loader, device)
     
     metrics = {
         "method": "JTT Baseline",
         "mnli": jtt_mnli,
         "hans": jtt_hans,
+        "esnli" jtt_esnli,
     }
     
     run_dir = os.path.join(cfg.output_dir, "jtt_baseline")
@@ -177,5 +180,5 @@ def train_jtt_baseline(cfg: TrainConfig):
     with open(os.path.join(run_dir, "metrics.json"), "w", encoding="utf-8") as f:
         json.dump(metrics, f, indent=2, ensure_ascii=False)
         
-    print(f"  MNLI Acc: {jtt_mnli['mnli_accuracy']:.4f} | HANS: {jtt_hans['hans_overall']:.4f}")
+    print(f"  MNLI Acc: {jtt_mnli['mnli_accuracy']:.4f} | HANS: {jtt_hans['hans_overall']:.4f} | ESNLI: {jtt_esnli['esnli_accuracy']:.4f}")
     return metrics

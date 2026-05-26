@@ -21,13 +21,14 @@ except ImportError:
 from configs.config import TrainConfig, LoRAConfig
 from data.dataloader import (
     set_seed, make_mnli_loaders, make_hans_loader, 
-    make_phase2_biased_mixed_loader, make_phase2_5_analysis_loaders
+    make_phase2_biased_mixed_loader, make_phase2_5_analysis_loaders,
+    make_esnli_test_loader
 )
 from models.surgery import inject_ties_unlearn_lora, get_ties_modules_by_layer, configure_ties_layers, merge_and_unload
 from models.ties_lora import set_model_forward_mode
 from models.analyzer import analyze_shortcut_layers
 from utils.optim_utils import _split_params, _make_scaler, _amp_enabled, _log_lora_norms, _save_checkpoint, _load_checkpoint
-from training.evaluate import eval_mnli, eval_hans
+from training.evaluate import eval_mnli, eval_hans, eval_esnli
 
 
 def train_ties_unlearn(cfg: TrainConfig, resume_from_checkpoint_path: Optional[str] = None):
@@ -43,6 +44,7 @@ def train_ties_unlearn(cfg: TrainConfig, resume_from_checkpoint_path: Optional[s
     train_loader, val_loader = make_mnli_loaders(cfg, tok)
     hans_loader = make_hans_loader(cfg, tok)
     phase2_train_loader = make_phase2_biased_mixed_loader(cfg, tok)
+    esnli_loader = make_esnli_test_loader(cfg, tok)
 
     # --- build model ---
     model = AutoModelForSequenceClassification.from_pretrained(
@@ -154,14 +156,15 @@ def train_ties_unlearn(cfg: TrainConfig, resume_from_checkpoint_path: Optional[s
 
         p1_mnli = eval_mnli(model, val_loader, device)
         p1_hans = eval_hans(model, hans_loader, device)
+        p1_esnli = eval_esnli(model, esnli_loader, device)
         print(f"  Phase1 HANS: overall={p1_hans['hans_overall']:.4f} "
               f"ent={p1_hans['hans_entailment']:.4f} "
               f"non-ent={p1_hans['hans_non_entailment']:.4f}")
         _log_lora_norms(model)
-        metrics["phase1"] = {"mnli": p1_mnli, "hans": p1_hans}
+        metrics["phase1"] = {"mnli": p1_mnli, "hans": p1_hans, "esnli": p1_esnli}
 
         if cfg.save_checkpoints_per_phase:
-            phase1_metrics_to_save = {"mnli": p1_mnli, "hans": p1_hans}
+            phase1_metrics_to_save = {"mnli": p1_mnli, "hans": p1_hans, "esnli": p1_esnli}
             if cfg.checkpoint_dir:
                 checkpoint_path_p1 = os.path.join(cfg.checkpoint_dir, f"phase1_checkpoint_epoch{cfg.phase1_epochs}.pt")
             else:
@@ -226,14 +229,15 @@ def train_ties_unlearn(cfg: TrainConfig, resume_from_checkpoint_path: Optional[s
 
         p2_mnli = eval_mnli(model, val_loader, device)
         p2_hans = eval_hans(model, hans_loader, device)
+        p2_esnli = eval_esnli(model, esnli_loader, device)
         print(f"  Phase2 HANS: overall={p2_hans['hans_overall']:.4f} "
               f"ent={p2_hans['hans_entailment']:.4f} "
               f"non-ent={p2_hans['hans_non_entailment']:.4f}")
         _log_lora_norms(model)
-        metrics["phase2"] = {"mnli": p2_mnli, "hans": p2_hans}
+        metrics["phase2"] = {"mnli": p2_mnli, "hans": p2_hans, "esnli": p2_esnli}
 
         if cfg.save_checkpoints_per_phase:
-            phase2_metrics_to_save = {"mnli": p2_mnli, "hans": p2_hans}
+            phase2_metrics_to_save = {"mnli": p2_mnli, "hans": p2_hans, "esnli": p2_esnli}
             if cfg.checkpoint_dir:
                 checkpoint_path_p2 = os.path.join(cfg.checkpoint_dir, f"phase2_checkpoint_epoch{cfg.phase2_epochs}.pt")
             else:
@@ -341,11 +345,12 @@ def train_ties_unlearn(cfg: TrainConfig, resume_from_checkpoint_path: Optional[s
 
     p3_mnli = eval_mnli(model, val_loader, device)
     p3_hans = eval_hans(model, hans_loader, device)
+    p3_esnli = eval_esnli(model, esnli_loader, device)
     print(f"  Phase3 HANS: overall={p3_hans['hans_overall']:.4f} "
           f"ent={p3_hans['hans_entailment']:.4f} "
           f"non-ent={p3_hans['hans_non_entailment']:.4f}")
     _log_lora_norms(model)
-    metrics["phase3"] = {"mnli": p3_mnli, "hans": p3_hans}
+    metrics["phase3"] = {"mnli": p3_mnli, "hans": p3_hans, "esnli": p3_esnli}
 
     # --- save ---
     run_dir = os.path.join(cfg.output_dir, cfg.experiment_name)

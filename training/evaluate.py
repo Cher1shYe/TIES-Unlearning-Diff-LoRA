@@ -57,3 +57,16 @@ def eval_hans(model, loader, device) -> Dict:
         "hans_non_entailment": nent_acc,
         "heuristic_breakdown": heur_acc,
     }
+
+@torch.no_grad()
+def eval_esnli(model, loader, device) -> Dict[str, float]:
+    model.eval()
+    correct = total = 0
+    for batch in loader:
+        ids = batch["input_ids"].to(device)
+        mask = batch["attention_mask"].to(device)
+        labels = batch["label"].to(device)
+        logits = model(input_ids=ids, attention_mask=mask).logits
+        correct += (logits.argmax(-1) == labels).sum().item()
+        total += labels.numel()
+    return {"esnli_accuracy": correct / max(total, 1)}

@@ -1,5 +1,7 @@
 import random
 import numpy as np
+import csv
+import urllib.request
 import torch
 from typing import Tuple
 from torch.utils.data import DataLoader
@@ -31,6 +33,22 @@ def _load_hans_dataset():
         hans = load_dataset("csv", data_files="./heuristics_evaluation_set.txt",
                             delimiter="\t", split="train")
     return hans
+
+def _load_esnli_dataset():
+    esnli_url = "https://raw.githubusercontent.com/OanaMariaCamburu/e-SNLI/refs/heads/master/dataset/esnli_test.csv"
+
+    # 1. Pull the raw text file directly over the network
+    with urllib.request.urlopen(esnli_url) as response:
+        lines = [line.decode('utf-8') for line in response.readlines()]
+
+    # 2. Parse using standard comma delimiter (since the header is comma-separated)
+    reader = csv.DictReader(lines, delimiter=",")
+
+    # 3. Rebuild as a clean list of dictionaries
+    data_list = [row for row in reader]
+
+    # 4. Wrap it straight back into a Hugging Face Dataset format
+    return Dataset.from_list(data_list)
 
 def _prepare_hans_base_dataset(cfg: TrainConfig, tok) -> Dataset:
     hans = _load_hans_dataset()
@@ -65,6 +83,23 @@ def _prepare_hans_analysis_base() -> Dataset:
         hans = hans.rename_column("sentence2", "hypothesis")
     return hans.filter(lambda ex: ex["label"] in (0, 1))
 
+def _prepare_esnli_test_dataset(cfg: TrainConfig, tok) -> Dataset:
+    esnli = _load_esnli_dataset()
+    label_map = {"entailment": 0, "neutral": 1, "contradiction": 2}
+    esnli = esnli.map(lambda ex: {"label": label_map.get(ex["gold_label"], -1)})
+    if "Sentence1" in esnli.column_names:
+        esnli = esnli.rename_column("Sentence1", "premise")
+    if "Sentence2" in esnli.column_names:
+        esnli = esnli.rename_column("Sentence2", "hypothesis")
+    esnli = esnli.filter(lambda ex: ex["label"] in (0, 1, 2) and ex["premise"] is not None and ex["hypothesis"] is not None)
+
+    def _tok_esnli(batch):
+        out = _tokenize_pair(tok, batch, cfg.max_seq_length)
+        out["label"] = batch["label"]
+        return out
+
+    return esnli.map(_tok_esnli, batched=True)
+
 def make_mnli_loaders(cfg: TrainConfig, tok, return_dataset=False):
     # 1. Fetch and sample data
     ds = load_dataset("glue", "mnli")
@@ -95,6 +130,13 @@ def make_hans_loader(cfg: TrainConfig, tok):
     hans = _prepare_hans_base_dataset(cfg, tok)
     hans.set_format(type="torch", columns=["input_ids", "attention_mask", "label", "heuristic"])
     return DataLoader(hans, batch_size=cfg.batch_size, shuffle=False)
+
+def make_esnli_test_loader(cfg: TrainConfig, tok):
+    test_ds = _prepare_esnli_test_dataset(cfg, tok)
+    cols = ["input_ids", "attention_mask", "label"]
+    test_ds.set_format(type="torch", columns=cols)
+
+    return DataLoader(test_ds, batch_size=cfg.batch_size, shuffle=False)
 
 def _select_phase2_train_columns(ds: Dataset) -> Dataset:
     # Unify the schema of Phase 2 training data: only keep input columns and force label to Value("int64").
