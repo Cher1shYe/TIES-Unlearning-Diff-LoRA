@@ -302,6 +302,12 @@ def make_debias_datasets(cfg: TrainConfig, tok):
     # Identical sampling to make_mnli_loaders so the comparison stays fair.
     train_base = _sample(ds["train"], cfg.mnli_train_size, cfg.seed)
     val_base = _sample(ds["validation_matched"], cfg.mnli_val_size, cfg.seed)
+    # GLUE MNLI ships a native (non-contiguous) ``idx`` column; drop it before
+    # adding our own contiguous 0..N-1 index, otherwise Arrow raises
+    # "columns['idx'] are duplicated". The contiguous index must match row order
+    # so per-example bias log-probs can be gathered via ``bias_logprobs[idx]``.
+    if "idx" in train_base.column_names:
+        train_base = train_base.remove_columns("idx")
     train_base = train_base.add_column("idx", list(range(len(train_base))))
 
     train_full = train_base.map(lambda b: _tokenize_pair(tok, b, cfg.max_seq_length), batched=True)
