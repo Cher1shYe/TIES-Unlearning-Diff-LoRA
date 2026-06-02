@@ -60,6 +60,7 @@ def inject_ties_unlearn_lora(
             lora_alpha=cfg.lora_alpha,
             dropout=cfg.lora_dropout,
             trim_ratio=cfg.trim_ratio,
+            merge_mode=getattr(cfg, "merge_mode", "full"),
         )
         new_layer.layer_tag = _extract_layer_tag(full_name) or full_name
         _set_child(parent, parts[-1], new_layer)
@@ -92,7 +93,7 @@ def merge_and_unload(model: nn.Module) -> nn.Module:
             continue
         dP, dN = module._deltas()
         if module.enable_ties:
-            dEff = module._ties_unlearn_merge(dP, dN)
+            dEff = module._merge_delta(dP, dN)
         else:
             dEff = module.alpha * dP
 

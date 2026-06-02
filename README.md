@@ -75,6 +75,60 @@ You can easily customize the experiment by modifying the parameters in `configs/
 
     * `phase2_mnli_mix_ratio` (default: 0.10): The proportion of MNLI data mixed with HANS entailment data during Phase 2 shortcut capture.
 
+## Baselines & Ablations
+
+Two drivers reproduce the reviewer-requested comparisons. Add `--small` for a
+Colab-friendly budget; use `--only` / `--skip` to select methods.
+
+**Stronger debiasing baselines** (`run_baselines.py`):
+
+```bash
+python run_baselines.py            # all 7 methods → baseline_results/comparison.{json,md}
+python run_baselines.py --small --only ties_full negmerge poe
+```
+
+| tag | method |
+|---|---|
+| `standard_lora` | plain single-path LoRA |
+| `jtt` | Just Train Twice |
+| `poe` | Product-of-Experts with a hypothesis-only bias model |
+| `zfilter` | data-centric filtering of bias-aligned examples |
+| `negmerge` | global sign-consensus merge (NegMerge-style, no trim/localization/Phase-3) |
+| `naive_subtract` | **true** global naive subtraction `αΔP − βΔN`, no masks, no Phase-3 |
+| `ties_full` | the full proposed pipeline |
+
+**Component ablations** (`run_ablations.py`) — each row isolates one design choice:
+
+```bash
+python run_ablations.py            # → ablation_results/ablation_summary.{json,md}
+```
+
+Merge-mask family (localization + Phase-3 fixed): `full`, `naive_mask`, `sign_only`,
+`trim_only`, `no_phase3`. Layer-localization family (full mask): `global`, `random`,
+`kl_only`, `knn_only`. Lower bound: `no_subtraction`.
+
+These map onto new `TrainConfig` knobs: `merge_mode` (`full|naive|sign_only|trim_only|p_only`),
+`random_layer_selection`, plus `bias_model_epochs` / `zfilter_drop_ratio` / `poe_bias_scale`
+for the bias-model baselines.
+
+## Robustness & Sensitivity
+
+**Multi-seed results** (`run_multiseed.py`) — reports mean ± std across seeds:
+
+```bash
+python run_multiseed.py --seeds 42 123 2024 --methods ties_full standard_lora negmerge
+# → multiseed_results/multiseed_summary.{json,md}  (per-seed runs isolated under seed_<s>/)
+```
+
+**Hyperparameter sensitivity** (`run_sensitivity.py` + `plot_sensitivity.py`) — one-at-a-time
+sweep over every parameter named in the reviews (`r_P`, `r_N`, `alpha`, `beta`, `trim_ratio`,
+`phase2_mnli_mix_ratio`, `layer_selection_topk`, `neg_lr_mult`, `target_modules`):
+
+```bash
+python run_sensitivity.py --small            # → sensitivity_results/sensitivity_summary.json
+python plot_sensitivity.py                   # → one PNG per parameter + sensitivity_table.md
+```
+
 ## Contributing & Contact
 We welcome contributions! If you encounter any bugs, have feature requests, or want to discuss the code:
 

@@ -172,7 +172,7 @@ def train_jtt_baseline(cfg: TrainConfig):
         "method": "JTT Baseline",
         "mnli": jtt_mnli,
         "hans": jtt_hans,
-        "esnli" jtt_esnli,
+        "esnli": jtt_esnli,
     }
     
     run_dir = os.path.join(cfg.output_dir, "jtt_baseline")

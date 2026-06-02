@@ -1,5 +1,6 @@
 import os
 import json
+import random
 import torch
 from dataclasses import asdict
 from typing import Dict, List, Optional
@@ -24,7 +25,10 @@ from data.dataloader import (
     make_phase2_biased_mixed_loader, make_phase2_5_analysis_loaders,
     make_esnli_test_loader
 )
-from models.surgery import inject_ties_unlearn_lora, get_ties_modules_by_layer, configure_ties_layers, merge_and_unload
+from models.surgery import (
+    inject_ties_unlearn_lora, get_ties_modules_by_layer, configure_ties_layers,
+    merge_and_unload, _layer_index_from_tag,
+)
 from models.ties_lora import set_model_forward_mode
 from models.analyzer import analyze_shortcut_layers
 from utils.optim_utils import _split_params, _make_scaler, _amp_enabled, _log_lora_norms, _save_checkpoint, _load_checkpoint
@@ -62,7 +66,7 @@ def train_ties_unlearn(cfg: TrainConfig, resume_from_checkpoint_path: Optional[s
         pos_rank=cfg.pos_rank, neg_rank=cfg.neg_rank,
         alpha=cfg.alpha, beta=cfg.beta,
         lora_alpha=cfg.lora_alpha, lora_dropout=cfg.lora_dropout,
-        trim_ratio=cfg.trim_ratio,
+        trim_ratio=cfg.trim_ratio, merge_mode=cfg.merge_mode,
     )
     model, replaced = inject_ties_unlearn_lora(model, list(cfg.target_modules), lora_cfg)
     model.to(device)
@@ -255,6 +259,18 @@ def train_ties_unlearn(cfg: TrainConfig, resume_from_checkpoint_path: Optional[s
                 "all_layer_tags": all_layer_tags,
             }
             print("[Phase2.5] No-TIES ablation enabled. All layers fall back to P-only in Phase 3.")
+        elif cfg.random_layer_selection:
+            # Ablation: pick layer_selection_topk layers uniformly at random (seeded for reproducibility).
+            rng = random.Random(cfg.seed)
+            k = min(int(cfg.layer_selection_topk), len(all_layer_tags))
+            shortcut_layers = sorted(rng.sample(all_layer_tags, k), key=_layer_index_from_tag)
+            configure_ties_layers(model, shortcut_layers)
+            metrics["phase2_5"] = {
+                "mode": "random",
+                "shortcut_layers": shortcut_layers,
+                "all_layer_tags": all_layer_tags,
+            }
+            print(f"[Phase2.5] Random layer selection: {shortcut_layers}")
         elif cfg.enable_layerwise_analysis:
             # Phase 2.5 only performs analysis and layer selection; no parameters are updated here.
             print("\n" + "=" * 60)

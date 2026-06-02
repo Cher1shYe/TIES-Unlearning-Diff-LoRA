@@ -22,6 +22,13 @@ def _tokenize_pair(tok, batch, max_len: int):
         truncation=True, padding="max_length", max_length=max_len,
     )
 
+def _tokenize_hypothesis_only(tok, batch, max_len: int):
+    # Hypothesis-only encoding for the bias model used by PoE / z-filtering baselines.
+    return tok(
+        batch["hypothesis"],
+        truncation=True, padding="max_length", max_length=max_len,
+    )
+
 def _sample(ds: Dataset, n: int, seed: int) -> Dataset:
     return ds.shuffle(seed=seed).select(range(n)) if n and n < len(ds) else ds
 
@@ -275,3 +282,35 @@ def make_phase2_5_analysis_loaders(cfg: TrainConfig, tok):
         DataLoader(ref_ds, batch_size=cfg.knn_batch_size, shuffle=False),
         DataLoader(query_ds, batch_size=cfg.knn_batch_size, shuffle=False),
     )
+
+def make_debias_datasets(cfg: TrainConfig, tok):
+    """Shared data for the PoE / z-filtering bias-model baselines.
+
+    Returns three tokenized HuggingFace datasets that all share the same row order
+    and an explicit ``idx`` column, so per-example bias log-probs (computed on the
+    hypothesis-only encoding, in order) can be gathered back onto the full-input
+    training batches by index:
+
+      * ``train_full`` : MNLI train, premise+hypothesis encoding, carries ``idx``.
+      * ``val_full``   : MNLI validation-matched, premise+hypothesis encoding.
+      * ``train_hyp``  : MNLI train, hypothesis-only encoding, carries ``idx``.
+
+    ``train_full`` and ``train_hyp`` are derived from the *same* sampled base, so
+    ``idx`` is consistent across the two encodings.
+    """
+    ds = load_dataset("glue", "mnli")
+    # Identical sampling to make_mnli_loaders so the comparison stays fair.
+    train_base = _sample(ds["train"], cfg.mnli_train_size, cfg.seed)
+    val_base = _sample(ds["validation_matched"], cfg.mnli_val_size, cfg.seed)
+    train_base = train_base.add_column("idx", list(range(len(train_base))))
+
+    train_full = train_base.map(lambda b: _tokenize_pair(tok, b, cfg.max_seq_length), batched=True)
+    val_full = val_base.map(lambda b: _tokenize_pair(tok, b, cfg.max_seq_length), batched=True)
+    train_hyp = train_base.map(lambda b: _tokenize_hypothesis_only(tok, b, cfg.max_seq_length), batched=True)
+
+    full_cols = ["input_ids", "attention_mask", "label", "idx"]
+    train_full.set_format(type="torch", columns=full_cols)
+    train_hyp.set_format(type="torch", columns=full_cols)
+    val_full.set_format(type="torch", columns=["input_ids", "attention_mask", "label"])
+
+    return {"train_full": train_full, "val_full": val_full, "train_hyp": train_hyp}

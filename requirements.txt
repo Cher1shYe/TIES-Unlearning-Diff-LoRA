@@ -5,3 +5,4 @@ datasets>=2.14.0
 accelerate>=0.24.0
 scikit-learn
 tqdm
+matplotlib

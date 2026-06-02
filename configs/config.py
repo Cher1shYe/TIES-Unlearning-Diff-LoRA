@@ -11,6 +11,8 @@ class LoRAConfig:
     lora_alpha: int = 16
     lora_dropout: float = 0.1
     trim_ratio: float = 0.2
+    # full | naive | sign_only | trim_only | p_only  (see TIESUnlearnLoRALinear)
+    merge_mode: str = "full"
 
 @dataclass
 class TrainConfig:
@@ -68,6 +70,20 @@ class TrainConfig:
     early_wrong_weight: float = 0.25
     no_ties_ablation: bool = False
 
+    # --- TIES merge / ablation controls ---
+    # Which mask(s) to apply in the Phase-3 merge. "full" = sign+trim (paper default).
+    # Use "naive"/"sign_only"/"trim_only" to isolate each mask, "p_only" to disable
+    # subtraction entirely. See models/ties_lora.py:TIESUnlearnLoRALinear.
+    merge_mode: str = "full"
+    # If True, Phase 2.5 picks `layer_selection_topk` layers at random (seeded) instead
+    # of running the KL/kNN analysis — the "randomly selected layers" ablation.
+    random_layer_selection: bool = False
+
+    # --- debiasing baselines (PoE / z-filtering / bias model) ---
+    bias_model_epochs: int = 3       # epochs to train the hypothesis-only bias model
+    zfilter_drop_ratio: float = 0.2  # fraction of most bias-aligned train examples to drop
+    poe_bias_scale: float = 1.0      # weight on the bias log-probs in the PoE objective
+
     # --- training phases ---
     phase1_epochs: int = 3      # Learn task        (head + P, N frozen)
     phase2_epochs: int = 2      # Capture shortcut  (N only, P & head frozen)
@@ -121,3 +137,11 @@ class TrainConfig:
             raise ValueError("phase2_mnli_mix_ratio must be in [0, 1].")
         if self.phase2_epoch_batches < 1:
             raise ValueError("phase2_epoch_batches must be >= 1.")
+
+        valid_merge_modes = {"full", "naive", "sign_only", "trim_only", "p_only"}
+        if self.merge_mode not in valid_merge_modes:
+            raise ValueError(f"merge_mode must be one of {sorted(valid_merge_modes)}, got {self.merge_mode!r}.")
+        if not (0.0 <= self.zfilter_drop_ratio < 1.0):
+            raise ValueError("zfilter_drop_ratio must be in [0, 1).")
+        if self.bias_model_epochs < 1:
+            raise ValueError("bias_model_epochs must be >= 1.")
