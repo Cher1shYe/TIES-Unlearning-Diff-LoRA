@@ -109,7 +109,7 @@ def _prepare_esnli_test_dataset(cfg: TrainConfig, tok) -> Dataset:
 
 def make_mnli_loaders(cfg: TrainConfig, tok, return_dataset=False):
     # 1. Fetch and sample data
-    ds = load_dataset("glue", "mnli")
+    ds = load_dataset("nyu-mll/glue", "mnli")
     train_ds = _sample(ds["train"], cfg.mnli_train_size, cfg.seed)
     val_ds = _sample(ds["validation_matched"], cfg.mnli_val_size, cfg.seed)
 
@@ -171,7 +171,7 @@ def make_phase2_biased_mixed_loader(cfg: TrainConfig, tok):
     parts = []
 
     if mnli_n > 0:
-        mnli = load_dataset("glue", "mnli")["train"]
+        mnli = load_dataset("nyu-mll/glue", "mnli")["train"]
         mnli = _sample_fixed_count(mnli, mnli_n, seed=cfg.seed + 611)
         mnli = mnli.map(lambda b: _tokenize_pair(tok, b, cfg.max_seq_length), batched=True)
         mnli = _select_phase2_train_columns(mnli)
@@ -229,7 +229,7 @@ def _select_analysis_columns(ds: Dataset) -> Dataset:
 
 def make_phase2_5_analysis_loaders(cfg: TrainConfig, tok):
     # Construct reference bank and query set as needed: sample MNLI / HANS entail / HANS non-entail separately and then merge.
-    mnli = load_dataset("glue", "mnli")["train"]
+    mnli = load_dataset("nyu-mll/glue", "mnli")["train"]
     mnli_ref_raw, mnli_query_raw = _split_for_reference_and_query(
         mnli,
         cfg.knn_ref_mnli,
@@ -298,7 +298,7 @@ def make_debias_datasets(cfg: TrainConfig, tok):
     ``train_full`` and ``train_hyp`` are derived from the *same* sampled base, so
     ``idx`` is consistent across the two encodings.
     """
-    ds = load_dataset("glue", "mnli")
+    ds = load_dataset("nyu-mll/glue", "mnli")
     # Identical sampling to make_mnli_loaders so the comparison stays fair.
     train_base = _sample(ds["train"], cfg.mnli_train_size, cfg.seed)
     val_base = _sample(ds["validation_matched"], cfg.mnli_val_size, cfg.seed)
