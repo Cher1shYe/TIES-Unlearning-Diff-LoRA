@@ -32,13 +32,17 @@ def _tokenize_hypothesis_only(tok, batch, max_len: int):
 def _sample(ds: Dataset, n: int, seed: int) -> Dataset:
     return ds.shuffle(seed=seed).select(range(n)) if n and n < len(ds) else ds
 
-def _load_hans_dataset():
-    hans_url = "https://raw.githubusercontent.com/tommccoy1/hans/master/heuristics_evaluation_set.txt"
+def _load_hans_dataset(split: str = "eval"):
+    # split="eval" -> heuristics_evaluation_set.txt  (held-out test only)
+    # split="train" -> heuristics_train_set.txt      (shortcut capture + localization)
+    # The two files are disjoint example sets with identical columns, so the choice
+    # only affects *which* HANS examples are seen, never the downstream pipeline.
+    fname = "heuristics_train_set.txt" if split == "train" else "heuristics_evaluation_set.txt"
+    hans_url = f"https://raw.githubusercontent.com/tommccoy1/hans/master/{fname}"
     try:
         hans = load_dataset("csv", data_files=hans_url, delimiter="\t", split="train")
     except Exception:
-        hans = load_dataset("csv", data_files="./heuristics_evaluation_set.txt",
-                            delimiter="\t", split="train")
+        hans = load_dataset("csv", data_files=f"./{fname}", delimiter="\t", split="train")
     return hans
 
 def _load_esnli_dataset():
@@ -58,7 +62,8 @@ def _load_esnli_dataset():
     return Dataset.from_list(data_list)
 
 def _prepare_hans_base_dataset(cfg: TrainConfig, tok) -> Dataset:
-    hans = _load_hans_dataset()
+    # Evaluation set only — always the held-out HANS split, never used for training.
+    hans = _load_hans_dataset("eval")
 
     label_map = {"entailment": 0, "non-entailment": 1}
     heuristic_map = {"lexical_overlap": 0, "subsequence": 1, "constituent": 2}
@@ -78,9 +83,13 @@ def _prepare_hans_base_dataset(cfg: TrainConfig, tok) -> Dataset:
 
     return hans.map(_tok_hans, batched=True)
 
-def _prepare_hans_analysis_base() -> Dataset:
+def _prepare_hans_analysis_base(cfg: TrainConfig) -> Dataset:
     # The analysis phase only needs premise/hypothesis/label, not the heuristic field.
-    hans = _load_hans_dataset()
+    # Used for Phase-2 shortcut capture and Phase-2.5 layer localization. Pull from
+    # the HANS *train* split when hans_clean_split is on, so the HANS evaluation set
+    # (used by make_hans_loader) stays strictly held-out — no train/eval leakage.
+    split = "train" if getattr(cfg, "hans_clean_split", True) else "eval"
+    hans = _load_hans_dataset(split)
     label_map = {"entailment": 0, "non-entailment": 1}
 
     hans = hans.map(lambda ex: {"label": label_map.get(ex["gold_label"], -1)})
@@ -179,7 +188,7 @@ def make_phase2_biased_mixed_loader(cfg: TrainConfig, tok):
         parts.append(mnli)
 
     if hans_n > 0:
-        hans = _prepare_hans_analysis_base()
+        hans = _prepare_hans_analysis_base(cfg)
         hans_ent = hans.filter(lambda ex: int(ex["label"]) == 0)
         hans_ent = _sample_fixed_count(hans_ent, hans_n, seed=cfg.seed + 712)
         hans_ent = hans_ent.map(lambda b: _tokenize_pair(tok, b, cfg.max_seq_length), batched=True)
@@ -240,7 +249,7 @@ def make_phase2_5_analysis_loaders(cfg: TrainConfig, tok):
     mnli_ref = _attach_analysis_fields(_tokenize_analysis_dataset(mnli_ref_raw, tok, cfg), group_id=0)
     mnli_query = _attach_analysis_fields(_tokenize_analysis_dataset(mnli_query_raw, tok, cfg), group_id=0)
 
-    hans = _prepare_hans_analysis_base()
+    hans = _prepare_hans_analysis_base(cfg)
     hans_ent_raw = hans.filter(lambda ex: int(ex["label"]) == 0)
     hans_non_raw = hans.filter(lambda ex: int(ex["label"]) == 1)
 

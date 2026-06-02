@@ -65,13 +65,14 @@ def _apply_small_overrides(cfg: TrainConfig) -> TrainConfig:
     return cfg
 
 
-def _make_base_cfg(small: bool, output_dir: str) -> TrainConfig:
+def _make_base_cfg(small: bool, output_dir: str, hans_clean_split: bool = True) -> TrainConfig:
     cfg = TrainConfig(
         run_baseline=False,
         run_jtt=False,
         save_checkpoints=False,
         save_checkpoints_per_phase=False,
         output_dir=output_dir,
+        hans_clean_split=hans_clean_split,
     )
     if small:
         cfg = _apply_small_overrides(cfg)
@@ -212,16 +213,22 @@ def main():
                         help="Run only the specified methods.")
     parser.add_argument("--skip", nargs="+", choices=METHOD_TAGS, default=[],
                         help="Skip the specified methods.")
+    parser.add_argument("--leaky-hans", action="store_true",
+                        help="Reproduce the original leaky behaviour: train the negative "
+                             "branch and run layer localization on the HANS *evaluation* "
+                             "set (default trains/localizes on the disjoint HANS train set).")
     args = parser.parse_args()
 
     methods_to_run = args.only if args.only else METHOD_TAGS
     methods_to_run = [m for m in methods_to_run if m not in args.skip]
 
-    base_cfg = _make_base_cfg(small=args.small, output_dir=args.output_dir)
+    base_cfg = _make_base_cfg(small=args.small, output_dir=args.output_dir,
+                              hans_clean_split=not args.leaky_hans)
     os.makedirs(args.output_dir, exist_ok=True)
 
     print(f"\n[run_baselines] output_dir = {args.output_dir}")
     print(f"[run_baselines] small mode  = {args.small}")
+    print(f"[run_baselines] HANS split  = {'EVAL (leaky)' if args.leaky_hans else 'TRAIN/EVAL disjoint (clean)'}")
     print(f"[run_baselines] methods     = {methods_to_run}")
 
     rows: List[Dict] = []

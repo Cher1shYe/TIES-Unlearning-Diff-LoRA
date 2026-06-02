@@ -29,6 +29,12 @@ class TrainConfig:
     max_seq_length: int = 128
     mnli_train_size: int = 100_000
     mnli_val_size: int = 5_000
+    # When True, the negative branch (Phase 2) and the kNN layer localization
+    # (Phase 2.5) draw their HANS examples from the HANS *train* split, while
+    # evaluation uses the disjoint HANS *evaluation* split. This removes the
+    # train/eval leakage flagged in review (HANS used for both design and test).
+    # Set False to reproduce the original single-file (leaky) behaviour.
+    hans_clean_split: bool = True
 
     # --- optimiser ---
     batch_size: int = 32
