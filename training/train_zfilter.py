@@ -50,7 +50,10 @@ def train_zfilter_baseline(cfg: TrainConfig):
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
-    labels = data["train_hyp"]["label"]  # [N] tensor, aligned with bias_logprobs row order
+    # datasets>=4.0 returns a lazy ``Column`` from ds["label"] (no .numel()); older
+    # versions return a torch tensor. torch.as_tensor normalizes both to a 1-D long
+    # tensor, aligned with bias_logprobs row order.
+    labels = torch.as_tensor(data["train_hyp"]["label"]).long().view(-1)
     n_total = labels.numel()
     p_true = bias_logprobs.exp()[torch.arange(n_total), labels]  # [N]
 
