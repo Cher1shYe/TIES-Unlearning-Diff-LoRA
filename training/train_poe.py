@@ -22,13 +22,14 @@ from torch.utils.data import DataLoader
 from configs.config import TrainConfig
 from data.dataloader import (
     set_seed, make_debias_datasets, make_hans_loader, make_esnli_test_loader,
+    make_anli_test_loader, make_snli_hard_test_loader,
 )
 from training.bias_utils import (
     build_single_lora_model, train_bias_model, compute_logprobs,
     make_optimizer_and_schedule, run_training_loop,
 )
 from utils.optim_utils import _make_scaler
-from training.evaluate import eval_mnli, eval_hans, eval_esnli
+from training.evaluate import eval_mnli, eval_hans, eval_esnli, eval_anli, eval_snli_hard
 from transformers import AutoTokenizer
 
 
@@ -41,6 +42,8 @@ def train_poe_baseline(cfg: TrainConfig):
     data = make_debias_datasets(cfg, tok)
     hans_loader = make_hans_loader(cfg, tok)
     esnli_loader = make_esnli_test_loader(cfg, tok)
+    anli_loader = make_anli_test_loader(cfg, tok)
+    snli_hard_loader = make_snli_hard_test_loader(cfg, tok)
 
     # --- 1) bias model on hypothesis-only inputs ---
     hyp_train_loader = DataLoader(data["train_hyp"], batch_size=cfg.batch_size, shuffle=True, drop_last=True)
@@ -79,12 +82,16 @@ def train_poe_baseline(cfg: TrainConfig):
     poe_mnli = eval_mnli(main_model, val_loader, device)
     poe_hans = eval_hans(main_model, hans_loader, device)
     poe_esnli = eval_esnli(main_model, esnli_loader, device)
+    poe_anli = eval_anli(main_model, anli_loader, device)
+    poe_snli_hard = eval_snli_hard(main_model, snli_hard_loader, device)
 
     metrics = {
         "method": "PoE (hypothesis-only bias)",
         "mnli": poe_mnli,
         "hans": poe_hans,
         "esnli": poe_esnli,
+        "anli": poe_anli,
+        "snli_hard": poe_snli_hard,
     }
     run_dir = os.path.join(cfg.output_dir, "poe_baseline")
     os.makedirs(run_dir, exist_ok=True)

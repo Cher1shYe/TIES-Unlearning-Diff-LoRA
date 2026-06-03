@@ -16,10 +16,13 @@ except ImportError:
     from torch.cuda.amp import autocast
 
 from configs.config import TrainConfig, LoRAConfig
-from data.dataloader import set_seed, make_mnli_loaders, make_hans_loader, make_esnli_test_loader
+from data.dataloader import (
+    set_seed, make_mnli_loaders, make_hans_loader, make_esnli_test_loader,
+    make_anli_test_loader, make_snli_hard_test_loader,
+)
 from models.surgery import inject_ties_unlearn_lora
 from utils.optim_utils import _split_params, _make_scaler, _amp_enabled
-from training.evaluate import eval_mnli, eval_hans, eval_esnli
+from training.evaluate import eval_mnli, eval_hans, eval_esnli, eval_anli, eval_snli_hard
 
 def train_single_lora_baseline(cfg: TrainConfig):
     """
@@ -34,6 +37,8 @@ def train_single_lora_baseline(cfg: TrainConfig):
     train_loader, val_loader = make_mnli_loaders(cfg, tok)
     hans_loader = make_hans_loader(cfg, tok)
     esnli_loader = make_esnli_test_loader(cfg, tok)
+    anli_loader = make_anli_test_loader(cfg, tok)
+    snli_hard_loader = make_snli_hard_test_loader(cfg, tok)
 
     model = AutoModelForSequenceClassification.from_pretrained(
         cfg.model_name, num_labels=cfg.num_labels,
@@ -99,12 +104,16 @@ def train_single_lora_baseline(cfg: TrainConfig):
     bl_mnli = eval_mnli(model, val_loader, device)
     bl_hans = eval_hans(model, hans_loader, device)
     bl_esnli = eval_esnli(model, esnli_loader, device)
+    bl_anli = eval_anli(model, anli_loader, device)
+    bl_snli_hard = eval_snli_hard(model, snli_hard_loader, device)
 
     metrics = {
         "method": "Single LoRA Baseline",
         "mnli": bl_mnli,
         "hans": bl_hans,
         "esnli": bl_esnli,
+        "anli": bl_anli,
+        "snli_hard": bl_snli_hard,
     }
 
     run_dir = os.path.join(cfg.output_dir, "baseline_single_lora")

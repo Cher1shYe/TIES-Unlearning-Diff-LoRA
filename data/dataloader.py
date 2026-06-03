@@ -1,6 +1,7 @@
 import random
 import numpy as np
 import csv
+import json
 import urllib.request
 import torch
 from typing import Tuple
@@ -152,6 +153,62 @@ def make_esnli_test_loader(cfg: TrainConfig, tok):
     cols = ["input_ids", "attention_mask", "label"]
     test_ds.set_format(type="torch", columns=cols)
 
+    return DataLoader(test_ds, batch_size=cfg.batch_size, shuffle=False)
+
+def _prepare_anli_test_dataset(cfg: TrainConfig, tok) -> Dataset:
+    # Adversarial NLI (Nie et al., 2020). A held-out OOD/adversarial benchmark the
+    # method never touches during training or layer localization. The three test
+    # rounds (R1/R2/R3) are concatenated into one test set. ANLI labels already use
+    # the MNLI mapping (0=entailment, 1=neutral, 2=contradiction).
+    ds = load_dataset("facebook/anli")
+    anli = concatenate_datasets([ds["test_r1"], ds["test_r2"], ds["test_r3"]])
+    anli = anli.filter(lambda ex: ex["label"] in (0, 1, 2)
+                       and ex["premise"] is not None and ex["hypothesis"] is not None)
+
+    def _tok_anli(batch):
+        out = _tokenize_pair(tok, batch, cfg.max_seq_length)
+        out["label"] = batch["label"]
+        return out
+
+    return anli.map(_tok_anli, batched=True)
+
+def make_anli_test_loader(cfg: TrainConfig, tok):
+    test_ds = _prepare_anli_test_dataset(cfg, tok)
+    cols = ["input_ids", "attention_mask", "label"]
+    test_ds.set_format(type="torch", columns=cols)
+    return DataLoader(test_ds, batch_size=cfg.batch_size, shuffle=False)
+
+def _load_snli_hard_dataset():
+    # SNLI-hard test set (Gururangan et al., 2018): the SNLI test subset that a
+    # hypothesis-only model gets wrong — a held-out shortcut stress test.
+    url = "https://nlp.stanford.edu/projects/snli/snli_1.0_test_hard.jsonl"
+    with urllib.request.urlopen(url) as response:
+        lines = [line.decode("utf-8") for line in response.readlines()]
+    data_list = [json.loads(line) for line in lines if line.strip()]
+    return Dataset.from_list(data_list)
+
+def _prepare_snli_hard_test_dataset(cfg: TrainConfig, tok) -> Dataset:
+    snli = _load_snli_hard_dataset()
+    label_map = {"entailment": 0, "neutral": 1, "contradiction": 2}
+    snli = snli.map(lambda ex: {"label": label_map.get(ex["gold_label"], -1)})
+    if "sentence1" in snli.column_names:
+        snli = snli.rename_column("sentence1", "premise")
+    if "sentence2" in snli.column_names:
+        snli = snli.rename_column("sentence2", "hypothesis")
+    snli = snli.filter(lambda ex: ex["label"] in (0, 1, 2)
+                       and ex["premise"] is not None and ex["hypothesis"] is not None)
+
+    def _tok_snli(batch):
+        out = _tokenize_pair(tok, batch, cfg.max_seq_length)
+        out["label"] = batch["label"]
+        return out
+
+    return snli.map(_tok_snli, batched=True)
+
+def make_snli_hard_test_loader(cfg: TrainConfig, tok):
+    test_ds = _prepare_snli_hard_test_dataset(cfg, tok)
+    cols = ["input_ids", "attention_mask", "label"]
+    test_ds.set_format(type="torch", columns=cols)
     return DataLoader(test_ds, batch_size=cfg.batch_size, shuffle=False)
 
 def _select_phase2_train_columns(ds: Dataset) -> Dataset:

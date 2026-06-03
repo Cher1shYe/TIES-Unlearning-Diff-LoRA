@@ -17,10 +17,13 @@ except ImportError:
 
 # Import project configurations and utilities
 from configs.config import TrainConfig, LoRAConfig
-from data.dataloader import set_seed, make_mnli_loaders, make_hans_loader, make_esnli_test_loader
+from data.dataloader import (
+    set_seed, make_mnli_loaders, make_hans_loader, make_esnli_test_loader,
+    make_anli_test_loader, make_snli_hard_test_loader,
+)
 from models.surgery import inject_ties_unlearn_lora
 from utils.optim_utils import _split_params, _make_scaler, _amp_enabled
-from training.evaluate import eval_mnli, eval_hans, eval_esnli
+from training.evaluate import eval_mnli, eval_hans, eval_esnli, eval_anli, eval_snli_hard
 
 def setup_single_lora_model(cfg: TrainConfig, device):
     """Helper function: Initialize a standard single-LoRA model and its corresponding optimizer."""
@@ -69,6 +72,8 @@ def train_jtt_baseline(cfg: TrainConfig):
     train_loader, val_loader, train_dataset = make_mnli_loaders(cfg, tok, return_dataset=True)
     hans_loader = make_hans_loader(cfg, tok)
     esnli_loader = make_esnli_test_loader(cfg, tok)
+    anli_loader = make_anli_test_loader(cfg, tok)
+    snli_hard_loader = make_snli_hard_test_loader(cfg, tok)
 
     # ──────────────────────────────────────────────────────────
     # [Phase 1] Train the temporary identification model, matched to phase1_epochs from unlearn config
@@ -167,12 +172,16 @@ def train_jtt_baseline(cfg: TrainConfig):
     jtt_mnli = eval_mnli(model_robust, val_loader, device)
     jtt_hans = eval_hans(model_robust, hans_loader, device)
     jtt_esnli = eval_esnli(model_robust, esnli_loader, device)
-    
+    jtt_anli = eval_anli(model_robust, anli_loader, device)
+    jtt_snli_hard = eval_snli_hard(model_robust, snli_hard_loader, device)
+
     metrics = {
         "method": "JTT Baseline",
         "mnli": jtt_mnli,
         "hans": jtt_hans,
         "esnli": jtt_esnli,
+        "anli": jtt_anli,
+        "snli_hard": jtt_snli_hard,
     }
     
     run_dir = os.path.join(cfg.output_dir, "jtt_baseline")

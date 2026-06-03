@@ -59,7 +59,8 @@ def eval_hans(model, loader, device) -> Dict:
     }
 
 @torch.no_grad()
-def eval_esnli(model, loader, device) -> Dict[str, float]:
+def _eval_pair_accuracy(model, loader, device, key: str) -> Dict[str, float]:
+    """3-class premise+hypothesis accuracy. Shared by e-SNLI / ANLI / SNLI-hard."""
     model.eval()
     correct = total = 0
     for batch in loader:
@@ -69,4 +70,16 @@ def eval_esnli(model, loader, device) -> Dict[str, float]:
         logits = model(input_ids=ids, attention_mask=mask).logits
         correct += (logits.argmax(-1) == labels).sum().item()
         total += labels.numel()
-    return {"esnli_accuracy": correct / max(total, 1)}
+    return {key: correct / max(total, 1)}
+
+
+def eval_esnli(model, loader, device) -> Dict[str, float]:
+    return _eval_pair_accuracy(model, loader, device, "esnli_accuracy")
+
+
+def eval_anli(model, loader, device) -> Dict[str, float]:
+    return _eval_pair_accuracy(model, loader, device, "anli_accuracy")
+
+
+def eval_snli_hard(model, loader, device) -> Dict[str, float]:
+    return _eval_pair_accuracy(model, loader, device, "snli_hard_accuracy")

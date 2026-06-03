@@ -19,13 +19,14 @@ from torch.utils.data import DataLoader
 from configs.config import TrainConfig
 from data.dataloader import (
     set_seed, make_debias_datasets, make_hans_loader, make_esnli_test_loader,
+    make_anli_test_loader, make_snli_hard_test_loader,
 )
 from training.bias_utils import (
     build_single_lora_model, train_bias_model, compute_logprobs,
     make_optimizer_and_schedule, run_training_loop,
 )
 from utils.optim_utils import _make_scaler
-from training.evaluate import eval_mnli, eval_hans, eval_esnli
+from training.evaluate import eval_mnli, eval_hans, eval_esnli, eval_anli, eval_snli_hard
 from transformers import AutoTokenizer
 
 
@@ -38,6 +39,8 @@ def train_zfilter_baseline(cfg: TrainConfig):
     data = make_debias_datasets(cfg, tok)
     hans_loader = make_hans_loader(cfg, tok)
     esnli_loader = make_esnli_test_loader(cfg, tok)
+    anli_loader = make_anli_test_loader(cfg, tok)
+    snli_hard_loader = make_snli_hard_test_loader(cfg, tok)
 
     # --- 1) bias model ---
     hyp_train_loader = DataLoader(data["train_hyp"], batch_size=cfg.batch_size, shuffle=True, drop_last=True)
@@ -87,12 +90,16 @@ def train_zfilter_baseline(cfg: TrainConfig):
     zf_mnli = eval_mnli(model, val_loader, device)
     zf_hans = eval_hans(model, hans_loader, device)
     zf_esnli = eval_esnli(model, esnli_loader, device)
+    zf_anli = eval_anli(model, anli_loader, device)
+    zf_snli_hard = eval_snli_hard(model, snli_hard_loader, device)
 
     metrics = {
         "method": "z-filtering (data-centric)",
         "mnli": zf_mnli,
         "hans": zf_hans,
         "esnli": zf_esnli,
+        "anli": zf_anli,
+        "snli_hard": zf_snli_hard,
         "n_dropped": n_drop,
         "n_kept": len(keep_indices),
     }
