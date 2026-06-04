@@ -106,13 +106,15 @@ def _write_summary_table(grouped: Dict[str, List[Dict]], out_path: str):
              ""]
     for p, rows in grouped.items():
         lines.append(f"## {p}\n")
-        lines.append("| value | MNLI | e-SNLI | HANS overall | HANS non-entailment |")
-        lines.append("|---|---:|---:|---:|---:|")
+        lines.append("| value | MNLI | e-SNLI | ANLI | SNLI-hard | HANS overall | HANS non-entailment |")
+        lines.append("|---|---:|---:|---:|---:|---:|---:|")
         for r in rows:
             mark = "  *(default)*" if r.get("from_anchor") else ""
             lines.append(
                 f"| {r.get('value_label', r['value'])}{mark} "
                 f"| {r['mnli_accuracy']*100:.2f}% | {r['esnli_accuracy']*100:.2f}% "
+                f"| {r.get('anli_accuracy', float('nan'))*100:.2f}% "
+                f"| {r.get('snli_hard_accuracy', float('nan'))*100:.2f}% "
                 f"| {r['hans_overall']*100:.2f}% | {r['hans_non_entailment']*100:.2f}% |"
             )
         lines.append("")

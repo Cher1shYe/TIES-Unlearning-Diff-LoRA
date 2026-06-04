@@ -91,11 +91,14 @@ def _make_base_cfg(small: bool, output_dir: str) -> TrainConfig:
 def _normalize(tag: str, raw: Dict) -> Dict:
     p3 = raw.get("phase3", {})
     mnli, hans, esnli = p3.get("mnli", {}), p3.get("hans", {}), p3.get("esnli", {})
+    anli, snli_hard = p3.get("anli", {}), p3.get("snli_hard", {})
     selected = raw.get("phase2_5", {}).get("shortcut_layers", None)
     return {
         "ablation": tag,
         "mnli_accuracy": float(mnli.get("mnli_accuracy", float("nan"))),
         "esnli_accuracy": float(esnli.get("esnli_accuracy", float("nan"))),
+        "anli_accuracy": float(anli.get("anli_accuracy", float("nan"))),
+        "snli_hard_accuracy": float(snli_hard.get("snli_hard_accuracy", float("nan"))),
         "hans_overall": float(hans.get("hans_overall", float("nan"))),
         "hans_entailment": float(hans.get("hans_entailment", float("nan"))),
         "hans_non_entailment": float(hans.get("hans_non_entailment", float("nan"))),
@@ -120,29 +123,32 @@ def _fmt_pct(x: float) -> str:
 
 
 def _print_table(rows: List[Dict]):
-    print("\n" + "=" * 80)
+    print("\n" + "=" * 96)
     print("ABLATION COMPARISON")
-    print("=" * 80)
-    print(f"{'Ablation':<18s} {'MNLI':>8s} {'ESNLI':>8s} {'HANS':>8s} {'H-ent':>8s} {'H-nent':>8s}")
-    print("-" * 80)
+    print("=" * 96)
+    print(f"{'Ablation':<18s} {'MNLI':>8s} {'ESNLI':>8s} {'ANLI':>8s} {'SNLI-h':>8s} "
+          f"{'HANS':>8s} {'H-ent':>8s} {'H-nent':>8s}")
+    print("-" * 96)
     for r in rows:
         print(f"{r['ablation']:<18s} "
               f"{_fmt_pct(r['mnli_accuracy'])} {_fmt_pct(r['esnli_accuracy'])} "
+              f"{_fmt_pct(r['anli_accuracy'])} {_fmt_pct(r['snli_hard_accuracy'])} "
               f"{_fmt_pct(r['hans_overall'])} {_fmt_pct(r['hans_entailment'])} "
               f"{_fmt_pct(r['hans_non_entailment'])}")
-    print("=" * 80)
+    print("=" * 96)
 
 
 def _write_markdown(rows: List[Dict], path: str):
     lines = [
         "# Component ablation",
         "",
-        "| Ablation | MNLI | e-SNLI | HANS overall | HANS entailment | HANS non-entailment |",
-        "|---|---:|---:|---:|---:|---:|",
+        "| Ablation | MNLI | e-SNLI | ANLI | SNLI-hard | HANS overall | HANS entailment | HANS non-entailment |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for r in rows:
         lines.append(
             f"| {r['ablation']} | {r['mnli_accuracy']*100:.2f}% | {r['esnli_accuracy']*100:.2f}% "
+            f"| {r['anli_accuracy']*100:.2f}% | {r['snli_hard_accuracy']*100:.2f}% "
             f"| {r['hans_overall']*100:.2f}% | {r['hans_entailment']*100:.2f}% "
             f"| {r['hans_non_entailment']*100:.2f}% |"
         )
@@ -175,6 +181,7 @@ def main():
             print(f"\n[run_ablations] ERROR in {tag}: {e}")
             rows.append({
                 "ablation": tag, "mnli_accuracy": float("nan"), "esnli_accuracy": float("nan"),
+                "anli_accuracy": float("nan"), "snli_hard_accuracy": float("nan"),
                 "hans_overall": float("nan"), "hans_entailment": float("nan"),
                 "hans_non_entailment": float("nan"), "selected_layers": None, "error": str(e),
             })

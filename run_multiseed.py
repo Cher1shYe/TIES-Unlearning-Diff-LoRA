@@ -30,7 +30,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from run_baselines import RUNNERS, METHOD_TAGS, _make_base_cfg, _fmt_pct
 
 METRIC_KEYS = [
-    "mnli_accuracy", "esnli_accuracy",
+    "mnli_accuracy", "esnli_accuracy", "anli_accuracy", "snli_hard_accuracy",
     "hans_overall", "hans_entailment", "hans_non_entailment",
 ]
 
@@ -66,28 +66,30 @@ def _fmt_mean_std(mean: float, std: float) -> str:
 
 
 def _print_table(agg: List[Dict]):
-    print("\n" + "=" * 96)
+    print("\n" + "=" * 128)
     print("MULTI-SEED COMPARISON  (mean ± std over seeds, %)")
-    print("=" * 96)
-    print(f"{'Method':<26s} {'n':>2s}  {'MNLI':>13s}  {'e-SNLI':>13s}  "
-          f"{'HANS':>13s}  {'H-ent':>13s}  {'H-nent':>13s}")
-    print("-" * 96)
+    print("=" * 128)
+    print(f"{'Method':<26s} {'n':>2s}  {'MNLI':>13s}  {'e-SNLI':>13s}  {'ANLI':>13s}  "
+          f"{'SNLI-h':>13s}  {'HANS':>13s}  {'H-ent':>13s}  {'H-nent':>13s}")
+    print("-" * 128)
     for r in agg:
         print(f"{r['method']:<26s} {r['n_seeds']:>2d}  "
               f"{_fmt_mean_std(r['mnli_accuracy_mean'], r['mnli_accuracy_std'])}  "
               f"{_fmt_mean_std(r['esnli_accuracy_mean'], r['esnli_accuracy_std'])}  "
+              f"{_fmt_mean_std(r['anli_accuracy_mean'], r['anli_accuracy_std'])}  "
+              f"{_fmt_mean_std(r['snli_hard_accuracy_mean'], r['snli_hard_accuracy_std'])}  "
               f"{_fmt_mean_std(r['hans_overall_mean'], r['hans_overall_std'])}  "
               f"{_fmt_mean_std(r['hans_entailment_mean'], r['hans_entailment_std'])}  "
               f"{_fmt_mean_std(r['hans_non_entailment_mean'], r['hans_non_entailment_std'])}")
-    print("=" * 96)
+    print("=" * 128)
 
 
 def _write_markdown(agg: List[Dict], path: str):
     lines = [
         "# Multi-seed results (mean ± std over seeds)",
         "",
-        "| Method | seeds | MNLI | e-SNLI | HANS overall | HANS entailment | HANS non-entailment |",
-        "|---|---:|---:|---:|---:|---:|---:|",
+        "| Method | seeds | MNLI | e-SNLI | ANLI | SNLI-hard | HANS overall | HANS entailment | HANS non-entailment |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
 
     def cell(r, k):
@@ -98,6 +100,7 @@ def _write_markdown(agg: List[Dict], path: str):
         lines.append(
             f"| {r['method']} | {r['n_seeds']} "
             f"| {cell(r, 'mnli_accuracy')} | {cell(r, 'esnli_accuracy')} "
+            f"| {cell(r, 'anli_accuracy')} | {cell(r, 'snli_hard_accuracy')} "
             f"| {cell(r, 'hans_overall')} | {cell(r, 'hans_entailment')} "
             f"| {cell(r, 'hans_non_entailment')} |"
         )
