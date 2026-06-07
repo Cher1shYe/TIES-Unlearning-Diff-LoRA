@@ -87,18 +87,21 @@ def _normalize_metrics(method: str, raw: Dict) -> Dict:
         esnli = raw["phase3"].get("esnli", {})
         anli = raw["phase3"].get("anli", {})
         snli_hard = raw["phase3"].get("snli_hard", {})
+        wanli = raw["phase3"].get("wanli", {})
     else:
         mnli = raw["mnli"]
         hans = raw["hans"]
         esnli = raw.get("esnli", {})
         anli = raw.get("anli", {})
         snli_hard = raw.get("snli_hard", {})
+        wanli = raw.get("wanli", {})
     return {
         "method": method,
         "mnli_accuracy": float(mnli["mnli_accuracy"]),
         "esnli_accuracy": float(esnli.get("esnli_accuracy", float("nan"))),
         "anli_accuracy": float(anli.get("anli_accuracy", float("nan"))),
         "snli_hard_accuracy": float(snli_hard.get("snli_hard_accuracy", float("nan"))),
+        "wanli_accuracy": float(wanli.get("wanli_accuracy", float("nan"))),
         "hans_overall": float(hans["hans_overall"]),
         "hans_entailment": float(hans["hans_entailment"]),
         "hans_non_entailment": float(hans["hans_non_entailment"]),
@@ -177,8 +180,8 @@ def _fmt_pct(x: float) -> str:
 
 def _print_table(rows: List[Dict]):
     header = (f"{'Method':<30s} {'MNLI':>8s} {'ESNLI':>8s} {'ANLI':>8s} {'SNLI-h':>8s} "
-              f"{'HANS':>8s} {'H-ent':>8s} {'H-nent':>8s}")
-    width = 100
+              f"{'WANLI':>8s} {'HANS':>8s} {'H-ent':>8s} {'H-nent':>8s}")
+    width = 110
     print("\n" + "=" * width)
     print("FINAL COMPARISON")
     print("=" * width)
@@ -190,6 +193,7 @@ def _print_table(rows: List[Dict]):
               f"{_fmt_pct(r['esnli_accuracy'])} "
               f"{_fmt_pct(r.get('anli_accuracy', float('nan')))} "
               f"{_fmt_pct(r.get('snli_hard_accuracy', float('nan')))} "
+              f"{_fmt_pct(r.get('wanli_accuracy', float('nan')))} "
               f"{_fmt_pct(r['hans_overall'])} "
               f"{_fmt_pct(r['hans_entailment'])} "
               f"{_fmt_pct(r['hans_non_entailment'])}")
@@ -200,14 +204,15 @@ def _write_markdown(rows: List[Dict], path: str):
     lines = [
         "# Baseline comparison",
         "",
-        "| Method | MNLI | e-SNLI | ANLI | SNLI-hard | HANS overall | HANS entailment | HANS non-entailment |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|",
+        "| Method | MNLI | e-SNLI | ANLI | SNLI-hard | WANLI | HANS overall | HANS entailment | HANS non-entailment |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for r in rows:
         lines.append(
             f"| {r['method']} | {r['mnli_accuracy']*100:.2f}% | {r['esnli_accuracy']*100:.2f}% "
             f"| {r.get('anli_accuracy', float('nan'))*100:.2f}% "
             f"| {r.get('snli_hard_accuracy', float('nan'))*100:.2f}% "
+            f"| {r.get('wanli_accuracy', float('nan'))*100:.2f}% "
             f"| {r['hans_overall']*100:.2f}% | {r['hans_entailment']*100:.2f}% "
             f"| {r['hans_non_entailment']*100:.2f}% |"
         )

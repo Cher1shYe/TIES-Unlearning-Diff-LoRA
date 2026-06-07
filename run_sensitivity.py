@@ -111,11 +111,13 @@ def _extract_metrics(metrics: Dict) -> Dict[str, float]:
     p3 = metrics.get("phase3", {})
     mnli, hans, esnli = p3.get("mnli", {}), p3.get("hans", {}), p3.get("esnli", {})
     anli, snli_hard = p3.get("anli", {}), p3.get("snli_hard", {})
+    wanli = p3.get("wanli", {})
     return {
         "mnli_accuracy":       float(mnli.get("mnli_accuracy", float("nan"))),
         "esnli_accuracy":      float(esnli.get("esnli_accuracy", float("nan"))),
         "anli_accuracy":       float(anli.get("anli_accuracy", float("nan"))),
         "snli_hard_accuracy":  float(snli_hard.get("snli_hard_accuracy", float("nan"))),
+        "wanli_accuracy":      float(wanli.get("wanli_accuracy", float("nan"))),
         "hans_overall":        float(hans.get("hans_overall", float("nan"))),
         "hans_entailment":     float(hans.get("hans_entailment", float("nan"))),
         "hans_non_entailment": float(hans.get("hans_non_entailment", float("nan"))),

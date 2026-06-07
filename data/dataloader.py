@@ -211,6 +211,38 @@ def make_snli_hard_test_loader(cfg: TrainConfig, tok):
     test_ds.set_format(type="torch", columns=cols)
     return DataLoader(test_ds, batch_size=cfg.batch_size, shuffle=False)
 
+def _prepare_wanli_test_dataset(cfg: TrainConfig, tok) -> Dataset:
+    # WANLI (Liu et al., 2022): worker-and-AI collaborative NLI with harder, more naturally
+    # adversarial examples than MNLI. A held-out OOD generalization benchmark the method
+    # never sees during training or layer localization. Uses the MNLI label mapping
+    # (0=entailment, 1=neutral, 2=contradiction).
+    ds = load_dataset("alisawuffles/WANLI")
+    wanli = ds["test"]
+    label_map = {"entailment": 0, "neutral": 1, "contradiction": 2}
+
+    def _norm_label(ex):
+        # WANLI stores the gold label as a string in "gold"; fall back to an int "label".
+        if ex.get("gold") is not None:
+            return {"label": label_map.get(str(ex["gold"]).lower(), -1)}
+        return {"label": int(ex["label"]) if ex.get("label") is not None else -1}
+
+    wanli = wanli.map(_norm_label)
+    wanli = wanli.filter(lambda ex: ex["label"] in (0, 1, 2)
+                         and ex["premise"] is not None and ex["hypothesis"] is not None)
+
+    def _tok_wanli(batch):
+        out = _tokenize_pair(tok, batch, cfg.max_seq_length)
+        out["label"] = batch["label"]
+        return out
+
+    return wanli.map(_tok_wanli, batched=True)
+
+def make_wanli_test_loader(cfg: TrainConfig, tok):
+    test_ds = _prepare_wanli_test_dataset(cfg, tok)
+    cols = ["input_ids", "attention_mask", "label"]
+    test_ds.set_format(type="torch", columns=cols)
+    return DataLoader(test_ds, batch_size=cfg.batch_size, shuffle=False)
+
 def _select_phase2_train_columns(ds: Dataset) -> Dataset:
     # Unify the schema of Phase 2 training data: only keep input columns and force label to Value("int64").
     ds = ds.map(lambda ex: {"label": int(ex["label"])})

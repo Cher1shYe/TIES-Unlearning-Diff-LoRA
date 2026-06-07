@@ -83,3 +83,7 @@ def eval_anli(model, loader, device) -> Dict[str, float]:
 
 def eval_snli_hard(model, loader, device) -> Dict[str, float]:
     return _eval_pair_accuracy(model, loader, device, "snli_hard_accuracy")
+
+
+def eval_wanli(model, loader, device) -> Dict[str, float]:
+    return _eval_pair_accuracy(model, loader, device, "wanli_accuracy")

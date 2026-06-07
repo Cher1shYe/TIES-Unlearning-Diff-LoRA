@@ -23,7 +23,8 @@ from configs.config import TrainConfig, LoRAConfig
 from data.dataloader import (
     set_seed, make_mnli_loaders, make_hans_loader,
     make_phase2_biased_mixed_loader, make_phase2_5_analysis_loaders,
-    make_esnli_test_loader, make_anli_test_loader, make_snli_hard_test_loader
+    make_esnli_test_loader, make_anli_test_loader, make_snli_hard_test_loader,
+    make_wanli_test_loader,
 )
 from models.surgery import (
     inject_ties_unlearn_lora, get_ties_modules_by_layer, configure_ties_layers,
@@ -32,7 +33,7 @@ from models.surgery import (
 from models.ties_lora import set_model_forward_mode
 from models.analyzer import analyze_shortcut_layers
 from utils.optim_utils import _split_params, _make_scaler, _amp_enabled, _log_lora_norms, _save_checkpoint, _load_checkpoint
-from training.evaluate import eval_mnli, eval_hans, eval_esnli, eval_anli, eval_snli_hard
+from training.evaluate import eval_mnli, eval_hans, eval_esnli, eval_anli, eval_snli_hard, eval_wanli
 
 
 def train_ties_unlearn(cfg: TrainConfig, resume_from_checkpoint_path: Optional[str] = None):
@@ -51,6 +52,11 @@ def train_ties_unlearn(cfg: TrainConfig, resume_from_checkpoint_path: Optional[s
     esnli_loader = make_esnli_test_loader(cfg, tok)
     anli_loader = make_anli_test_loader(cfg, tok)
     snli_hard_loader = make_snli_hard_test_loader(cfg, tok)
+    try:
+        wanli_loader = make_wanli_test_loader(cfg, tok)
+    except Exception as e:
+        print(f"[TIES-Unlearn] WARNING: could not load WANLI ({e}); WANLI eval skipped (n/a).")
+        wanli_loader = None
 
     # --- build model ---
     model = AutoModelForSequenceClassification.from_pretrained(
@@ -403,14 +409,17 @@ def train_ties_unlearn(cfg: TrainConfig, resume_from_checkpoint_path: Optional[s
     p3_esnli = eval_esnli(model, esnli_loader, device)
     p3_anli = eval_anli(model, anli_loader, device)
     p3_snli_hard = eval_snli_hard(model, snli_hard_loader, device)
+    p3_wanli = (eval_wanli(model, wanli_loader, device)
+                if wanli_loader is not None else {"wanli_accuracy": float("nan")})
     print(f"  Phase3 HANS: overall={p3_hans['hans_overall']:.4f} "
           f"ent={p3_hans['hans_entailment']:.4f} "
           f"non-ent={p3_hans['hans_non_entailment']:.4f}")
     print(f"  Phase3 OOD: ANLI={p3_anli['anli_accuracy']:.4f} "
-          f"SNLI-hard={p3_snli_hard['snli_hard_accuracy']:.4f}")
+          f"SNLI-hard={p3_snli_hard['snli_hard_accuracy']:.4f} "
+          f"WANLI={p3_wanli['wanli_accuracy']:.4f}")
     _log_lora_norms(model)
     metrics["phase3"] = {"mnli": p3_mnli, "hans": p3_hans, "esnli": p3_esnli,
-                         "anli": p3_anli, "snli_hard": p3_snli_hard}
+                         "anli": p3_anli, "snli_hard": p3_snli_hard, "wanli": p3_wanli}
 
     # --- save ---
     run_dir = os.path.join(cfg.output_dir, cfg.experiment_name)
