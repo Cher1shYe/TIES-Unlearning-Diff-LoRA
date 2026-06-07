@@ -347,6 +347,10 @@ def train_ties_unlearn(cfg: TrainConfig, resume_from_checkpoint_path: Optional[s
         total_steps = cfg.phase3_epochs * len(train_loader)
         sch = get_linear_schedule_with_warmup(opt, int(cfg.warmup_ratio * total_steps), total_steps)
         scaler = _make_scaler(cfg.fp16, device)
+        if cfg.phase3_debias_reweight:
+            print(f"[Phase3] debias reweighting ON (gamma={cfg.phase3_reweight_gamma}): "
+                  f"down-weighting examples the frozen N (shortcut) path already solves, "
+                  f"so Phase-3 cannot recover MNLI via the shortcut.")
 
         for ep in range(cfg.phase3_epochs):
             model.train()
@@ -358,7 +362,25 @@ def train_ties_unlearn(cfg: TrainConfig, resume_from_checkpoint_path: Optional[s
                     batch["labels"] = batch.pop("label")
                 opt.zero_grad(set_to_none=True)
                 with autocast(device_type=device.type, enabled=_amp_enabled(cfg.fp16, device)):
-                    loss = model(**batch).loss
+                    if cfg.phase3_debias_reweight:
+                        # Fix (A): score each example with the FROZEN N (shortcut) path.
+                        # High N-confidence on the gold label => the shortcut alone solves it
+                        # => down-weight, so recovering MNLI here can't re-learn the shortcut.
+                        inputs = {k: v for k, v in batch.items() if k != "labels"}
+                        labels = batch["labels"]
+                        with torch.no_grad():
+                            set_model_forward_mode(model, "phase2")   # base + ΔN only
+                            n_logits = model(**inputs).logits
+                            set_model_forward_mode(model, "eval")      # back to merged
+                            p_n = torch.softmax(n_logits.float(), dim=-1).gather(
+                                1, labels.view(-1, 1)).squeeze(1)
+                            w = (1.0 - p_n).clamp_min(0.0).pow(cfg.phase3_reweight_gamma)
+                            w = w * (w.numel() / w.sum().clamp_min(1e-6))  # mean-1 normalize
+                        logits = model(**inputs).logits
+                        per = torch.nn.functional.cross_entropy(logits, labels, reduction="none")
+                        loss = (per * w).mean()
+                    else:
+                        loss = model(**batch).loss
                 scaler.scale(loss).backward()
                 scaler.unscale_(opt)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.max_grad_norm)

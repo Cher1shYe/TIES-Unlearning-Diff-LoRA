@@ -53,6 +53,10 @@ ABLATIONS: Dict[str, Dict[str, Any]] = {
     # FT cannot re-inject the removed shortcut. Compare directly against `full`.
     "full_lockP":      {"merge_mode": "full", "enable_layerwise_analysis": True,
                         "phase3_freeze_subtracted_p": True},
+    # Fix (A): same as `full`, but Phase-3 down-weights shortcut-solvable examples (scored
+    # by the frozen N path) so debias FT can't re-learn the shortcut. Compare against `full`.
+    "full_debiasP3":   {"merge_mode": "full", "enable_layerwise_analysis": True,
+                        "phase3_debias_reweight": True, "phase3_reweight_gamma": 2.0},
     # --- layer-localization family (full mask, phase-3 on) ---
     "global":          {"merge_mode": "full", "enable_layerwise_analysis": False},
     "random":          {"merge_mode": "full", "random_layer_selection": True},
