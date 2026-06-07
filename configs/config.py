@@ -84,6 +84,11 @@ class TrainConfig:
     # If True, Phase 2.5 picks `layer_selection_topk` layers at random (seeded) instead
     # of running the KL/kNN analysis — the "randomly selected layers" ablation.
     random_layer_selection: bool = False
+    # If True, Phase 3 keeps the P-branch of the *subtracted* (enable_ties) layers FROZEN,
+    # so debias fine-tuning cannot rebuild the shortcut direction we just removed; only the
+    # head + the non-subtracted layers' P are tuned to recover MNLI. Fix (B) for the
+    # "Phase-3 re-injects the shortcut" failure mode. Default False = original behaviour.
+    phase3_freeze_subtracted_p: bool = False
 
     # --- debiasing baselines (PoE / z-filtering / bias model) ---
     bias_model_epochs: int = 3       # epochs to train the hypothesis-only bias model

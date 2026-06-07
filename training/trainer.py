@@ -324,6 +324,21 @@ def train_ties_unlearn(cfg: TrainConfig, resume_from_checkpoint_path: Optional[s
             elif n in head_names:
                 p.requires_grad = True
 
+        # Fix (B): keep the P-branch of the subtracted layers frozen so Phase-3 cannot
+        # rebuild the shortcut direction we just removed. _split_params filters by
+        # requires_grad, so the optimizer below automatically excludes these.
+        n_frozen_p = 0
+        if cfg.phase3_freeze_subtracted_p:
+            for layer_tag, modules in get_ties_modules_by_layer(model).items():
+                for module in modules:
+                    if module.enable_ties:
+                        for p in module.get_pos_params():
+                            p.requires_grad = False
+                            n_frozen_p += 1
+            metrics["phase2_5"]["phase3_frozen_p_tensors"] = n_frozen_p
+            print(f"[Phase3] freeze_subtracted_p: froze P on subtracted layers "
+                  f"({n_frozen_p} P tensors); head + non-subtracted P stay trainable.")
+
         pos_params, _, head_params = _split_params(model)
         opt = AdamW([
             {"params": head_params, "lr": cfg.learning_rate * 0.1, "weight_decay": cfg.weight_decay},

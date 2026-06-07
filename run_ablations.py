@@ -49,6 +49,10 @@ ABLATIONS: Dict[str, Dict[str, Any]] = {
     "sign_only":       {"merge_mode": "sign_only", "enable_layerwise_analysis": True},
     "trim_only":       {"merge_mode": "trim_only", "enable_layerwise_analysis": True},
     "no_phase3":       {"merge_mode": "full", "enable_layerwise_analysis": True, "phase3_epochs": 0},
+    # Fix (B): same as `full`, but Phase-3 keeps the subtracted layers' P frozen so debias
+    # FT cannot re-inject the removed shortcut. Compare directly against `full`.
+    "full_lockP":      {"merge_mode": "full", "enable_layerwise_analysis": True,
+                        "phase3_freeze_subtracted_p": True},
     # --- layer-localization family (full mask, phase-3 on) ---
     "global":          {"merge_mode": "full", "enable_layerwise_analysis": False},
     "random":          {"merge_mode": "full", "random_layer_selection": True},
