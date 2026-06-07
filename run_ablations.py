@@ -44,19 +44,22 @@ from training.trainer import train_ties_unlearn
 # tag -> dict of TrainConfig overrides applied on top of the base config.
 ABLATIONS: Dict[str, Dict[str, Any]] = {
     # --- merge-mask family (localization on, phase-3 on) ---
-    "full":            {"merge_mode": "full", "enable_layerwise_analysis": True},
+    # The proposed full method = sign+trim merge + layer localization + Phase-3 debias FT
+    # WITH N-reweighting (Fix A, now the default). Explicit here for documentation.
+    "full":            {"merge_mode": "full", "enable_layerwise_analysis": True,
+                        "phase3_debias_reweight": True, "phase3_reweight_gamma": 2.0},
     "naive_mask":      {"merge_mode": "naive", "enable_layerwise_analysis": True},
     "sign_only":       {"merge_mode": "sign_only", "enable_layerwise_analysis": True},
     "trim_only":       {"merge_mode": "trim_only", "enable_layerwise_analysis": True},
     "no_phase3":       {"merge_mode": "full", "enable_layerwise_analysis": True, "phase3_epochs": 0},
-    # Fix (B): same as `full`, but Phase-3 keeps the subtracted layers' P frozen so debias
-    # FT cannot re-inject the removed shortcut. Compare directly against `full`.
+    # Ablate Fix (A): full method but WITHOUT N-reweighting in Phase-3 (the old behaviour,
+    # where debias FT re-injects the shortcut). This is the key row showing A's contribution.
+    "no_reweight":     {"merge_mode": "full", "enable_layerwise_analysis": True,
+                        "phase3_debias_reweight": False},
+    # Alternative fix (B), kept for comparison against (A): freeze the subtracted layers' P
+    # in Phase-3 instead of reweighting. Reweight explicitly OFF to isolate the freeze effect.
     "full_lockP":      {"merge_mode": "full", "enable_layerwise_analysis": True,
-                        "phase3_freeze_subtracted_p": True},
-    # Fix (A): same as `full`, but Phase-3 down-weights shortcut-solvable examples (scored
-    # by the frozen N path) so debias FT can't re-learn the shortcut. Compare against `full`.
-    "full_debiasP3":   {"merge_mode": "full", "enable_layerwise_analysis": True,
-                        "phase3_debias_reweight": True, "phase3_reweight_gamma": 2.0},
+                        "phase3_freeze_subtracted_p": True, "phase3_debias_reweight": False},
     # --- layer-localization family (full mask, phase-3 on) ---
     "global":          {"merge_mode": "full", "enable_layerwise_analysis": False},
     "random":          {"merge_mode": "full", "random_layer_selection": True},

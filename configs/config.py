@@ -89,12 +89,13 @@ class TrainConfig:
     # head + the non-subtracted layers' P are tuned to recover MNLI. Fix (B) for the
     # "Phase-3 re-injects the shortcut" failure mode. Default False = original behaviour.
     phase3_freeze_subtracted_p: bool = False
-    # Fix (A): re-weight the Phase-3 debias FT loss using the frozen N (shortcut) path.
-    # Examples the N path already classifies correctly with high confidence (i.e. solvable
-    # by the shortcut) get down-weighted by w=(1-p_N)^gamma, so recovering MNLI cannot
-    # re-learn the shortcut from the data. Default False = original behaviour.
-    phase3_debias_reweight: bool = False
-    phase3_reweight_gamma: float = 1.0
+    # Fix (A) — NOW PART OF THE DEFAULT METHOD. Re-weight the Phase-3 debias FT loss using
+    # the frozen N (shortcut) path. Examples the N path already classifies correctly with
+    # high confidence (i.e. solvable by the shortcut) get down-weighted by w=(1-p_N)^gamma,
+    # so recovering MNLI cannot re-learn the shortcut from the data. This is what makes the
+    # subtraction give a net gain (H-nent 22.3 -> 30.8). Set reweight=False to ablate it.
+    phase3_debias_reweight: bool = True
+    phase3_reweight_gamma: float = 2.0
 
     # --- debiasing baselines (PoE / z-filtering / bias model) ---
     bias_model_epochs: int = 3       # epochs to train the hypothesis-only bias model

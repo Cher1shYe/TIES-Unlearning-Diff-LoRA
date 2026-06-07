@@ -27,12 +27,37 @@ import numpy as np
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from run_baselines import RUNNERS, METHOD_TAGS, _make_base_cfg, _fmt_pct
+from copy import deepcopy
+
+from run_baselines import RUNNERS, METHOD_TAGS, _make_base_cfg, _fmt_pct, _normalize_metrics
+from run_ablations import ABLATIONS
+from training.trainer import train_ties_unlearn
 
 METRIC_KEYS = [
     "mnli_accuracy", "esnli_accuracy", "anli_accuracy", "snli_hard_accuracy",
     "hans_overall", "hans_entailment", "hans_non_entailment",
 ]
+
+# Methods you can run across seeds: every baseline tag PLUS every ablation tag
+# (so we can also get mean±std for no_reweight / no_subtraction / full_lockP, etc.).
+ALL_TAGS = METHOD_TAGS + [t for t in ABLATIONS if t not in METHOD_TAGS]
+
+
+def _run_tagged(tag: str, base_cfg):
+    """Dispatch a tag to either a run_baselines runner or a run_ablations config,
+    returning a normalized metrics dict (method + metric keys)."""
+    if tag in RUNNERS:
+        return RUNNERS[tag](base_cfg)
+    if tag in ABLATIONS:
+        cfg = deepcopy(base_cfg)
+        for k, v in ABLATIONS[tag].items():
+            setattr(cfg, k, v)
+        # knn_only etc. need kl_topk_candidates >= layer_selection_topk (post_init invariant).
+        if cfg.kl_topk_candidates < cfg.layer_selection_topk:
+            cfg.kl_topk_candidates = cfg.layer_selection_topk
+        cfg.experiment_name = f"ablation_{tag}"
+        return _normalize_metrics(tag, train_ties_unlearn(cfg))
+    raise ValueError(f"unknown method/ablation tag: {tag!r}")
 
 
 def _aggregate(records: List[Dict]) -> List[Dict]:
@@ -115,9 +140,10 @@ def main():
                         help="Use a reduced training budget (Colab-friendly).")
     parser.add_argument("--seeds", nargs="+", type=int, default=[42, 123, 2024],
                         help="Random seeds to run each method with.")
-    parser.add_argument("--methods", nargs="+", choices=METHOD_TAGS,
-                        default=["standard_lora", "ties_full"],
-                        help="Which methods (run_baselines tags) to run across seeds.")
+    parser.add_argument("--methods", nargs="+", choices=ALL_TAGS, metavar="TAG",
+                        default=["standard_lora", "jtt", "ties_full", "no_reweight", "no_subtraction"],
+                        help="Methods to run across seeds: run_baselines tags AND run_ablations "
+                             "tags (e.g. ties_full no_reweight no_subtraction full_lockP).")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -134,7 +160,7 @@ def main():
             base_cfg.seed = seed
             print("\n" + "*" * 72 + f"\n* seed={seed}  method={tag}\n" + "*" * 72)
             try:
-                metrics = RUNNERS[tag](base_cfg)   # normalized dict (method + metric keys)
+                metrics = _run_tagged(tag, base_cfg)   # normalized dict (method + metric keys)
                 rec = {"tag": tag, "seed": seed, "method": metrics.get("method", tag)}
                 for k in METRIC_KEYS:
                     rec[k] = float(metrics.get(k, float("nan")))
