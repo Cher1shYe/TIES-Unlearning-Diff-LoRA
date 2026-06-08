@@ -1,0 +1,27 @@
+{
+  "method": "z-filtering (data-centric)",
+  "mnli": {
+    "mnli_accuracy": 0.8432
+  },
+  "hans": {
+    "hans_overall": 0.6006666666666667,
+    "hans_entailment": 0.9621333333333333,
+    "hans_non_entailment": 0.2392,
+    "heuristic_breakdown": {
+      "lexical_overlap": 0.6093,
+      "subsequence": 0.5874,
+      "constituent": 0.6053
+    }
+  },
+  "esnli": {
+    "esnli_accuracy": 0.8117874592833876
+  },
+  "anli": {
+    "anli_accuracy": 0.28375
+  },
+  "snli_hard": {
+    "snli_hard_accuracy": 0.7371971787795155
+  },
+  "n_dropped": 20000,
+  "n_kept": 80000
+}

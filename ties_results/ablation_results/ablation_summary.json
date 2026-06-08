@@ -1,0 +1,165 @@
+[
+  {
+    "ablation": "full",
+    "mnli_accuracy": 0.8538,
+    "esnli_accuracy": 0.8060871335504886,
+    "anli_accuracy": 0.2796875,
+    "snli_hard_accuracy": 0.7332106715731371,
+    "hans_overall": 0.5976,
+    "hans_entailment": 0.9726,
+    "hans_non_entailment": 0.2226,
+    "selected_layers": [
+      "encoder.layer.1",
+      "encoder.layer.9",
+      "encoder.layer.10",
+      "encoder.layer.11"
+    ]
+  },
+  {
+    "ablation": "naive_mask",
+    "mnli_accuracy": 0.85,
+    "esnli_accuracy": 0.8087337133550488,
+    "anli_accuracy": 0.28375,
+    "snli_hard_accuracy": 0.7283042011652867,
+    "hans_overall": 0.5984666666666667,
+    "hans_entailment": 0.9741333333333333,
+    "hans_non_entailment": 0.2228,
+    "selected_layers": [
+      "encoder.layer.1",
+      "encoder.layer.9",
+      "encoder.layer.10",
+      "encoder.layer.11"
+    ]
+  },
+  {
+    "ablation": "sign_only",
+    "mnli_accuracy": 0.8518,
+    "esnli_accuracy": 0.8091408794788274,
+    "anli_accuracy": 0.284375,
+    "snli_hard_accuracy": 0.735050597976081,
+    "hans_overall": 0.5925,
+    "hans_entailment": 0.9750666666666666,
+    "hans_non_entailment": 0.20993333333333333,
+    "selected_layers": [
+      "encoder.layer.1",
+      "encoder.layer.9",
+      "encoder.layer.10",
+      "encoder.layer.11"
+    ]
+  },
+  {
+    "ablation": "trim_only",
+    "mnli_accuracy": 0.8472,
+    "esnli_accuracy": 0.8058835504885994,
+    "anli_accuracy": 0.285625,
+    "snli_hard_accuracy": 0.7283042011652867,
+    "hans_overall": 0.5935333333333334,
+    "hans_entailment": 0.9744,
+    "hans_non_entailment": 0.21266666666666667,
+    "selected_layers": [
+      "encoder.layer.1",
+      "encoder.layer.9",
+      "encoder.layer.10",
+      "encoder.layer.11"
+    ]
+  },
+  {
+    "ablation": "no_phase3",
+    "mnli_accuracy": 0.6096,
+    "esnli_accuracy": 0.5918159609120521,
+    "anli_accuracy": 0.3115625,
+    "snli_hard_accuracy": 0.5679239497086783,
+    "hans_overall": 0.4815,
+    "hans_entailment": 0.131,
+    "hans_non_entailment": 0.832,
+    "selected_layers": [
+      "encoder.layer.1",
+      "encoder.layer.9",
+      "encoder.layer.10",
+      "encoder.layer.11"
+    ]
+  },
+  {
+    "ablation": "global",
+    "mnli_accuracy": 0.8394,
+    "esnli_accuracy": 0.7842019543973942,
+    "anli_accuracy": 0.275625,
+    "snli_hard_accuracy": 0.6967187979147501,
+    "hans_overall": 0.5120333333333333,
+    "hans_entailment": 0.9922666666666666,
+    "hans_non_entailment": 0.0318,
+    "selected_layers": [
+      "encoder.layer.0",
+      "encoder.layer.1",
+      "encoder.layer.2",
+      "encoder.layer.3",
+      "encoder.layer.4",
+      "encoder.layer.5",
+      "encoder.layer.6",
+      "encoder.layer.7",
+      "encoder.layer.8",
+      "encoder.layer.9",
+      "encoder.layer.10",
+      "encoder.layer.11"
+    ]
+  },
+  {
+    "ablation": "random",
+    "mnli_accuracy": 0.8494,
+    "esnli_accuracy": 0.8058835504885994,
+    "anli_accuracy": 0.2796875,
+    "snli_hard_accuracy": 0.7178779515486047,
+    "hans_overall": 0.5630333333333334,
+    "hans_entailment": 0.9808,
+    "hans_non_entailment": 0.14526666666666666,
+    "selected_layers": [
+      "encoder.layer.0",
+      "encoder.layer.1",
+      "encoder.layer.4",
+      "encoder.layer.10"
+    ]
+  },
+  {
+    "ablation": "kl_only",
+    "mnli_accuracy": 0.852,
+    "esnli_accuracy": 0.8083265472312704,
+    "anli_accuracy": 0.279375,
+    "snli_hard_accuracy": 0.7365838699785342,
+    "hans_overall": 0.6015333333333334,
+    "hans_entailment": 0.9693333333333334,
+    "hans_non_entailment": 0.23373333333333332,
+    "selected_layers": [
+      "encoder.layer.8",
+      "encoder.layer.9",
+      "encoder.layer.10",
+      "encoder.layer.11"
+    ]
+  },
+  {
+    "ablation": "knn_only",
+    "mnli_accuracy": 0.852,
+    "esnli_accuracy": 0.805985342019544,
+    "anli_accuracy": 0.284375,
+    "snli_hard_accuracy": 0.7292241643667586,
+    "hans_overall": 0.5394,
+    "hans_entailment": 0.9912666666666666,
+    "hans_non_entailment": 0.08753333333333334,
+    "selected_layers": [
+      "encoder.layer.0",
+      "encoder.layer.1",
+      "encoder.layer.10",
+      "encoder.layer.11"
+    ]
+  },
+  {
+    "ablation": "no_subtraction",
+    "mnli_accuracy": 0.8544,
+    "esnli_accuracy": 0.8113802931596091,
+    "anli_accuracy": 0.2909375,
+    "snli_hard_accuracy": 0.7365838699785342,
+    "hans_overall": 0.6187333333333334,
+    "hans_entailment": 0.9648,
+    "hans_non_entailment": 0.27266666666666667,
+    "selected_layers": []
+  }
+]

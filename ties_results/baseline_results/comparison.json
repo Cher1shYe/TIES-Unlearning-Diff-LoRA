@@ -1,0 +1,114 @@
+[
+  {
+    "method": "Standard LoRA",
+    "mnli_accuracy": 0.85,
+    "esnli_accuracy": 0.8153501628664495,
+    "anli_accuracy": 0.2875,
+    "snli_hard_accuracy": 0.7353572523765716,
+    "hans_overall": 0.5937666666666667,
+    "hans_entailment": 0.9854,
+    "hans_non_entailment": 0.20213333333333333,
+    "heuristic_breakdown": {
+      "lexical_overlap": 0.5864,
+      "subsequence": 0.5446,
+      "constituent": 0.6503
+    },
+    "_source": "baseline_single_lora/metrics.json"
+  },
+  {
+    "method": "JTT",
+    "mnli_accuracy": 0.8188,
+    "esnli_accuracy": 0.7908184039087948,
+    "anli_accuracy": 0.309375,
+    "snli_hard_accuracy": 0.702851885924563,
+    "hans_overall": 0.6233333333333333,
+    "hans_entailment": 0.9008666666666667,
+    "hans_non_entailment": 0.3458,
+    "heuristic_breakdown": {
+      "lexical_overlap": 0.6187,
+      "subsequence": 0.6082,
+      "constituent": 0.6431
+    },
+    "_source": "jtt_baseline/metrics.json"
+  },
+  {
+    "method": "PoE (bias-model)",
+    "mnli_accuracy": 0.8392,
+    "esnli_accuracy": 0.8015065146579805,
+    "anli_accuracy": 0.285625,
+    "snli_hard_accuracy": 0.7381171419809874,
+    "hans_overall": 0.5883333333333334,
+    "hans_entailment": 0.9694,
+    "hans_non_entailment": 0.20726666666666665,
+    "heuristic_breakdown": {
+      "lexical_overlap": 0.5614,
+      "subsequence": 0.5691,
+      "constituent": 0.6345
+    },
+    "_source": "poe_baseline/metrics.json"
+  },
+  {
+    "method": "z-filtering",
+    "mnli_accuracy": 0.8432,
+    "esnli_accuracy": 0.8117874592833876,
+    "anli_accuracy": 0.28375,
+    "snli_hard_accuracy": 0.7371971787795155,
+    "hans_overall": 0.6006666666666667,
+    "hans_entailment": 0.9621333333333333,
+    "hans_non_entailment": 0.2392,
+    "heuristic_breakdown": {
+      "lexical_overlap": 0.6093,
+      "subsequence": 0.5874,
+      "constituent": 0.6053
+    },
+    "_source": "zfilter_baseline/metrics.json"
+  },
+  {
+    "method": "NegMerge",
+    "mnli_accuracy": 0.3176,
+    "esnli_accuracy": 0.32512214983713356,
+    "anli_accuracy": 0.333125,
+    "snli_hard_accuracy": 0.34958601655933763,
+    "hans_overall": 0.5,
+    "hans_entailment": 0.0,
+    "hans_non_entailment": 1.0,
+    "heuristic_breakdown": {
+      "lexical_overlap": 0.5,
+      "subsequence": 0.5,
+      "constituent": 0.5
+    },
+    "_source": "negmerge/metrics.json"
+  },
+  {
+    "method": "Naive Subtraction (no TIES)",
+    "mnli_accuracy": 0.3166,
+    "esnli_accuracy": 0.32430781758957655,
+    "anli_accuracy": 0.3325,
+    "snli_hard_accuracy": 0.3526525605642441,
+    "hans_overall": 0.5,
+    "hans_entailment": 0.0,
+    "hans_non_entailment": 1.0,
+    "heuristic_breakdown": {
+      "lexical_overlap": 0.5,
+      "subsequence": 0.5,
+      "constituent": 0.5
+    },
+    "_source": "naive_subtract/metrics.json"
+  },
+  {
+    "method": "TIES-Unlearning Diff-LoRA",
+    "mnli_accuracy": 0.8538,
+    "esnli_accuracy": 0.8060871335504886,
+    "anli_accuracy": 0.2796875,
+    "snli_hard_accuracy": 0.7332106715731371,
+    "hans_overall": 0.5976,
+    "hans_entailment": 0.9726,
+    "hans_non_entailment": 0.2226,
+    "heuristic_breakdown": {
+      "lexical_overlap": 0.5627,
+      "subsequence": 0.582,
+      "constituent": 0.6481
+    },
+    "_source": "ties_full/metrics.json"
+  }
+]

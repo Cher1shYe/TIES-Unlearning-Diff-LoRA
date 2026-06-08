@@ -1,0 +1,18 @@
+[
+  {
+    "ablation": "full_debiasP3",
+    "mnli_accuracy": 0.8558,
+    "esnli_accuracy": 0.8097516286644951,
+    "anli_accuracy": 0.284375,
+    "snli_hard_accuracy": 0.7353572523765716,
+    "hans_overall": 0.6276666666666667,
+    "hans_entailment": 0.9474,
+    "hans_non_entailment": 0.30793333333333334,
+    "selected_layers": [
+      "encoder.layer.1",
+      "encoder.layer.9",
+      "encoder.layer.10",
+      "encoder.layer.11"
+    ]
+  }
+]

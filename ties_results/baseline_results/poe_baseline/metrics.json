@@ -1,0 +1,25 @@
+{
+  "method": "PoE (hypothesis-only bias)",
+  "mnli": {
+    "mnli_accuracy": 0.8392
+  },
+  "hans": {
+    "hans_overall": 0.5883333333333334,
+    "hans_entailment": 0.9694,
+    "hans_non_entailment": 0.20726666666666665,
+    "heuristic_breakdown": {
+      "lexical_overlap": 0.5614,
+      "subsequence": 0.5691,
+      "constituent": 0.6345
+    }
+  },
+  "esnli": {
+    "esnli_accuracy": 0.8015065146579805
+  },
+  "anli": {
+    "anli_accuracy": 0.285625
+  },
+  "snli_hard": {
+    "snli_hard_accuracy": 0.7381171419809874
+  }
+}

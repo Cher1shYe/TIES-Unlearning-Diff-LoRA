@@ -1,0 +1,25 @@
+{
+  "method": "Single LoRA Baseline",
+  "mnli": {
+    "mnli_accuracy": 0.8504
+  },
+  "hans": {
+    "hans_overall": 0.6113333333333333,
+    "hans_entailment": 0.9762666666666666,
+    "hans_non_entailment": 0.2464,
+    "heuristic_breakdown": {
+      "lexical_overlap": 0.5793,
+      "subsequence": 0.5779,
+      "constituent": 0.6768
+    }
+  },
+  "esnli": {
+    "esnli_accuracy": 0.809242671009772
+  },
+  "anli": {
+    "anli_accuracy": 0.299375
+  },
+  "snli_hard": {
+    "snli_hard_accuracy": 0.7221711131554738
+  }
+}

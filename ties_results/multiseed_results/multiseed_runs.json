@@ -1,0 +1,93 @@
+[
+  {
+    "tag": "standard_lora",
+    "seed": 42,
+    "method": "Standard LoRA",
+    "mnli_accuracy": 0.85,
+    "esnli_accuracy": 0.8153501628664495,
+    "anli_accuracy": 0.2875,
+    "snli_hard_accuracy": 0.7353572523765716,
+    "wanli_accuracy": NaN,
+    "hans_overall": 0.5937666666666667,
+    "hans_entailment": 0.9854,
+    "hans_non_entailment": 0.20213333333333333
+  },
+  {
+    "tag": "jtt",
+    "seed": 42,
+    "method": "JTT",
+    "mnli_accuracy": 0.8188,
+    "esnli_accuracy": 0.7908184039087948,
+    "anli_accuracy": 0.309375,
+    "snli_hard_accuracy": 0.702851885924563,
+    "wanli_accuracy": NaN,
+    "hans_overall": 0.6233333333333333,
+    "hans_entailment": 0.9008666666666667,
+    "hans_non_entailment": 0.3458
+  },
+  {
+    "tag": "ties_full",
+    "seed": 42,
+    "method": "TIES-Unlearning Diff-LoRA",
+    "mnli_accuracy": 0.8558,
+    "esnli_accuracy": 0.8097516286644951,
+    "anli_accuracy": 0.284375,
+    "snli_hard_accuracy": 0.7353572523765716,
+    "wanli_accuracy": 0.5868,
+    "hans_overall": 0.6276666666666667,
+    "hans_entailment": 0.9474,
+    "hans_non_entailment": 0.30793333333333334
+  },
+  {
+    "tag": "no_reweight",
+    "seed": 42,
+    "method": "no_reweight",
+    "mnli_accuracy": 0.8538,
+    "esnli_accuracy": 0.8060871335504886,
+    "anli_accuracy": 0.2796875,
+    "snli_hard_accuracy": 0.7332106715731371,
+    "wanli_accuracy": 0.5796,
+    "hans_overall": 0.5976,
+    "hans_entailment": 0.9726,
+    "hans_non_entailment": 0.2226
+  },
+  {
+    "tag": "no_subtraction",
+    "seed": 42,
+    "method": "no_subtraction",
+    "mnli_accuracy": 0.852,
+    "esnli_accuracy": 0.8109731270358306,
+    "anli_accuracy": 0.28625,
+    "snli_hard_accuracy": 0.7359705611775529,
+    "wanli_accuracy": 0.588,
+    "hans_overall": 0.6571,
+    "hans_entailment": 0.9228,
+    "hans_non_entailment": 0.3914
+  },
+  {
+    "tag": "standard_lora",
+    "seed": 123,
+    "method": "Standard LoRA",
+    "mnli_accuracy": 0.8504,
+    "esnli_accuracy": 0.809242671009772,
+    "anli_accuracy": 0.299375,
+    "snli_hard_accuracy": 0.7221711131554738,
+    "wanli_accuracy": NaN,
+    "hans_overall": 0.6113333333333333,
+    "hans_entailment": 0.9762666666666666,
+    "hans_non_entailment": 0.2464
+  },
+  {
+    "tag": "jtt",
+    "seed": 123,
+    "method": "JTT",
+    "mnli_accuracy": 0.8224,
+    "esnli_accuracy": 0.787764657980456,
+    "anli_accuracy": 0.29,
+    "snli_hard_accuracy": 0.697638761116222,
+    "wanli_accuracy": NaN,
+    "hans_overall": 0.6376,
+    "hans_entailment": 0.9201333333333334,
+    "hans_non_entailment": 0.35506666666666664
+  }
+]

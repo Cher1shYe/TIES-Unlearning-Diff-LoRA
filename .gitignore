@@ -16,5 +16,8 @@ env/
 # Project specific outputs (adjust if your output folder has a different name)
 ties_unlearn_results/
 
+# Downloaded result archives (redundant with the extracted ties_results/ tree)
+*.zip
+
 # Internal Team Documentation (Optional)
 Instructions.md
