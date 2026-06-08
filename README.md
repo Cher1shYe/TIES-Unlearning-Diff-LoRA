@@ -7,7 +7,13 @@ Traditional **$W_{high} - W_{low}$** parameter subtraction often degrades a mode
 * Phase 1 (Learn Task): Freeze the N-path; train the classification head and high-rank P-LoRA.
 * Phase 2 (Capture Shortcut): Freeze the P-path and classification head; train low-rank N-LoRA on biased mixed data.
 * Phase 2.5 (Layer-wise Analysis): Freeze the entire model. Automatically identify the layers with the most severe shortcuts using symmetric KL divergence and kNN feature clustering scores.
-* Phase 3 (TIES Fine-tuning): Execute TIES merging (sign alignment and magnitude trimming) strictly on the selected layers to complete the debiasing fine-tuning process.
+* Phase 3 (TIES Fine-tuning + debias reweighting): Execute TIES merging (sign alignment and magnitude trimming) strictly on the selected layers, then fine-tune the head + P-path to recover MNLI. Crucially, this fine-tuning is **re-weighted by the frozen N (shortcut) path**: examples the shortcut already solves are down-weighted by `w = (1 − p_N)^γ`, so recovering task accuracy cannot re-learn the shortcut it just removed. Without this step, Phase-3 re-injects the bias and the subtraction yields *no* net robustness gain; with it, HANS non-entailment improves above the no-subtraction lower bound. Controlled by `phase3_debias_reweight` (on by default).
+
+## Evaluation & Leakage-free Protocol
+
+Every run is evaluated on **MNLI** (in-distribution), **e-SNLI** (cross-source utility), and four OOD/adversarial robustness sets: **HANS** (overall / entailment / non-entailment), **ANLI**, **SNLI-hard**, and **WANLI** (generalization to harder, naturally adversarial NLI). WANLI is downloaded from the Hub on first use; if it cannot be fetched the run still completes and records WANLI as `n/a`.
+
+**Leakage-free HANS split** (`hans_clean_split`, default `True`): shortcut capture (Phase 2) and layer localization (Phase 2.5) draw from the HANS **train** split (`heuristics_train_set.txt`), while the HANS **evaluation** split (`heuristics_evaluation_set.txt`) is used *only* for final evaluation and stays strictly held out — keeping shortcut induction, layer selection, and evaluation disjoint. Pass `--leaky-hans` to `run_baselines.py` to reproduce the old (leaky) single-split behaviour for comparison.
 
 ## Directory Structure
 
@@ -75,6 +81,16 @@ You can easily customize the experiment by modifying the parameters in `configs/
 
     * `phase2_mnli_mix_ratio` (default: 0.10): The proportion of MNLI data mixed with HANS entailment data during Phase 2 shortcut capture.
 
+* Phase-3 debias reweighting (the proposed fix — **on by default**):
+
+    * `phase3_debias_reweight` (default: True): down-weight shortcut-solvable examples during Phase-3 using the frozen N path, so debias fine-tuning cannot re-learn the shortcut.
+
+    * `phase3_reweight_gamma` (default: 2.0): strength of the down-weighting `w=(1−p_N)^γ`.
+
+* Leakage-free evaluation:
+
+    * `hans_clean_split` (default: True): train / localize on the HANS train split, evaluate on the disjoint HANS eval split (see *Evaluation & Leakage-free Protocol* above).
+
 ## Baselines & Ablations
 
 Two drivers reproduce the reviewer-requested comparisons. Add `--small` for a
@@ -103,22 +119,31 @@ python run_baselines.py --small --only ties_full negmerge poe
 python run_ablations.py            # → ablation_results/ablation_summary.{json,md}
 ```
 
-Merge-mask family (localization + Phase-3 fixed): `full`, `naive_mask`, `sign_only`,
-`trim_only`, `no_phase3`. Layer-localization family (full mask): `global`, `random`,
-`kl_only`, `knn_only`. Lower bound: `no_subtraction`.
+Merge-mask family (localization + Phase-3 fixed): `full` (the full proposed method, **with**
+debias reweighting), `naive_mask`, `sign_only`, `trim_only`, `no_phase3`. Layer-localization
+family (full mask): `global`, `random`, `kl_only`, `knn_only`. Phase-3 debiasing: `no_reweight`
+(ablate the N-reweighting — shows its contribution vs `full`), `full_lockP` (alternative fix:
+freeze the subtracted layers' P in Phase-3 instead of reweighting). Lower bound: `no_subtraction`.
 
 These map onto new `TrainConfig` knobs: `merge_mode` (`full|naive|sign_only|trim_only|p_only`),
-`random_layer_selection`, plus `bias_model_epochs` / `zfilter_drop_ratio` / `poe_bias_scale`
-for the bias-model baselines.
+`random_layer_selection`, `phase3_debias_reweight` / `phase3_reweight_gamma` (Phase-3 N-reweighting),
+`phase3_freeze_subtracted_p` (the freeze alternative), plus `bias_model_epochs` /
+`zfilter_drop_ratio` / `poe_bias_scale` for the bias-model baselines.
 
 ## Robustness & Sensitivity
 
-**Multi-seed results** (`run_multiseed.py`) — reports mean ± std across seeds:
+**Multi-seed results** (`run_multiseed.py`) — reports mean ± std across seeds. `--methods`
+accepts **both** baseline tags and ablation tags (e.g. `no_reweight`, `no_subtraction`, `full_lockP`):
 
 ```bash
-python run_multiseed.py --seeds 42 123 2024 --methods ties_full standard_lora negmerge
+python run_multiseed.py --seeds 42 123 2024
+# default methods: standard_lora jtt ties_full no_reweight no_subtraction
 # → multiseed_results/multiseed_summary.{json,md}  (per-seed runs isolated under seed_<s>/)
 ```
+
+The sweep **resumes automatically**: re-running the same command skips already-finished
+`(seed, method)` runs (tracked in `multiseed_runs.json`). Pass `--fresh` to ignore prior
+results and start over.
 
 **Hyperparameter sensitivity** (`run_sensitivity.py` + `plot_sensitivity.py`) — one-at-a-time
 sweep over every parameter named in the reviews (`r_P`, `r_N`, `alpha`, `beta`, `trim_ratio`,
@@ -127,6 +152,13 @@ sweep over every parameter named in the reviews (`r_P`, `r_N`, `alpha`, `beta`, 
 ```bash
 python run_sensitivity.py --small            # → sensitivity_results/sensitivity_summary.json
 python plot_sensitivity.py                   # → one PNG per parameter + sensitivity_table.md
+```
+
+**Resuming / rebuilding summaries** — recover from interruptions without retraining finished runs:
+
+```bash
+python finish_sensitivity.py --output-dir ./sensitivity_results   # finish a broken sweep, rebuild summary
+python finish_baselines.py   --output-dir ./baseline_results      # rebuild comparison.{json,md} from per-method metrics.json
 ```
 
 ## Contributing & Contact
