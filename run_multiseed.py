@@ -136,6 +136,23 @@ def _write_markdown(agg: List[Dict], path: str):
         f.write("\n".join(lines) + "\n")
 
 
+def _load_existing(output_dir: str):
+    """Load already-finished (seed, tag) runs from a prior multiseed_runs.json so an
+    interrupted sweep can resume. Only successful records count as done; error records
+    are dropped and re-run."""
+    path = os.path.join(output_dir, "multiseed_runs.json")
+    if not os.path.exists(path):
+        return [], set()
+    try:
+        recs = json.load(open(path, encoding="utf-8"))
+    except Exception as e:
+        print(f"[run_multiseed] could not read {path} ({e}); starting fresh.")
+        return [], set()
+    ok = [r for r in recs if "error" not in r]
+    done = {(r["seed"], r["tag"]) for r in ok}
+    return ok, done
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-dir", default="./multiseed_results")
@@ -147,18 +164,26 @@ def main():
                         default=["standard_lora", "jtt", "ties_full", "no_reweight", "no_subtraction"],
                         help="Methods to run across seeds: run_baselines tags AND run_ablations "
                              "tags (e.g. ties_full no_reweight no_subtraction full_lockP).")
+    parser.add_argument("--fresh", action="store_true",
+                        help="Ignore any existing multiseed_runs.json and re-run everything "
+                             "(default: resume, skipping already-finished (seed, method) runs).")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
+    records, done = ([], set()) if args.fresh else _load_existing(args.output_dir)
     print(f"\n[run_multiseed] output_dir = {args.output_dir}")
     print(f"[run_multiseed] small mode  = {args.small}")
     print(f"[run_multiseed] seeds       = {args.seeds}")
     print(f"[run_multiseed] methods     = {args.methods}")
+    print(f"[run_multiseed] resume      = {not args.fresh} "
+          f"({len(done)} (seed,method) runs already done, will skip)")
 
-    records: List[Dict] = []
     for seed in args.seeds:
         seed_dir = os.path.join(args.output_dir, f"seed_{seed}")
         for tag in args.methods:
+            if (seed, tag) in done:
+                print(f"[run_multiseed] SKIP seed={seed} method={tag} (already done)")
+                continue
             base_cfg = _make_base_cfg(small=args.small, output_dir=seed_dir)
             base_cfg.seed = seed
             print("\n" + "*" * 72 + f"\n* seed={seed}  method={tag}\n" + "*" * 72)
