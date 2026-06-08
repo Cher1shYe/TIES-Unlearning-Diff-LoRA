@@ -1,0 +1,25 @@
+{
+  "method": "JTT Baseline",
+  "mnli": {
+    "mnli_accuracy": 0.8168
+  },
+  "hans": {
+    "hans_overall": 0.6339,
+    "hans_entailment": 0.9162666666666667,
+    "hans_non_entailment": 0.3515333333333333,
+    "heuristic_breakdown": {
+      "lexical_overlap": 0.6555,
+      "subsequence": 0.6199,
+      "constituent": 0.6263
+    }
+  },
+  "esnli": {
+    "esnli_accuracy": 0.7822679153094463
+  },
+  "anli": {
+    "anli_accuracy": 0.276875
+  },
+  "snli_hard": {
+    "snli_hard_accuracy": 0.6979454155167126
+  }
+}

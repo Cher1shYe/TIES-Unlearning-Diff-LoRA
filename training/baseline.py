@@ -18,11 +18,11 @@ except ImportError:
 from configs.config import TrainConfig, LoRAConfig
 from data.dataloader import (
     set_seed, make_mnli_loaders, make_hans_loader, make_esnli_test_loader,
-    make_anli_test_loader, make_snli_hard_test_loader,
+    make_anli_test_loader, make_snli_hard_test_loader, make_wanli_test_loader,
 )
 from models.surgery import inject_ties_unlearn_lora
 from utils.optim_utils import _split_params, _make_scaler, _amp_enabled
-from training.evaluate import eval_mnli, eval_hans, eval_esnli, eval_anli, eval_snli_hard
+from training.evaluate import eval_mnli, eval_hans, eval_esnli, eval_anli, eval_snli_hard, eval_wanli
 
 def train_single_lora_baseline(cfg: TrainConfig):
     """
@@ -39,6 +39,11 @@ def train_single_lora_baseline(cfg: TrainConfig):
     esnli_loader = make_esnli_test_loader(cfg, tok)
     anli_loader = make_anli_test_loader(cfg, tok)
     snli_hard_loader = make_snli_hard_test_loader(cfg, tok)
+    try:
+        wanli_loader = make_wanli_test_loader(cfg, tok)
+    except Exception as e:
+        print(f"[Baseline] WANLI load failed ({e}); WANLI skipped.")
+        wanli_loader = None
 
     model = AutoModelForSequenceClassification.from_pretrained(
         cfg.model_name, num_labels=cfg.num_labels,
@@ -106,6 +111,8 @@ def train_single_lora_baseline(cfg: TrainConfig):
     bl_esnli = eval_esnli(model, esnli_loader, device)
     bl_anli = eval_anli(model, anli_loader, device)
     bl_snli_hard = eval_snli_hard(model, snli_hard_loader, device)
+    bl_wanli = (eval_wanli(model, wanli_loader, device)
+                if wanli_loader is not None else {"wanli_accuracy": float("nan")})
 
     metrics = {
         "method": "Single LoRA Baseline",
@@ -114,6 +121,7 @@ def train_single_lora_baseline(cfg: TrainConfig):
         "esnli": bl_esnli,
         "anli": bl_anli,
         "snli_hard": bl_snli_hard,
+        "wanli": bl_wanli,
     }
 
     run_dir = os.path.join(cfg.output_dir, "baseline_single_lora")

@@ -22,14 +22,14 @@ from torch.utils.data import DataLoader
 from configs.config import TrainConfig
 from data.dataloader import (
     set_seed, make_debias_datasets, make_hans_loader, make_esnli_test_loader,
-    make_anli_test_loader, make_snli_hard_test_loader,
+    make_anli_test_loader, make_snli_hard_test_loader, make_wanli_test_loader,
 )
 from training.bias_utils import (
     build_single_lora_model, train_bias_model, compute_logprobs,
     make_optimizer_and_schedule, run_training_loop,
 )
 from utils.optim_utils import _make_scaler
-from training.evaluate import eval_mnli, eval_hans, eval_esnli, eval_anli, eval_snli_hard
+from training.evaluate import eval_mnli, eval_hans, eval_esnli, eval_anli, eval_snli_hard, eval_wanli
 from transformers import AutoTokenizer
 
 
@@ -44,6 +44,11 @@ def train_poe_baseline(cfg: TrainConfig):
     esnli_loader = make_esnli_test_loader(cfg, tok)
     anli_loader = make_anli_test_loader(cfg, tok)
     snli_hard_loader = make_snli_hard_test_loader(cfg, tok)
+    try:
+        wanli_loader = make_wanli_test_loader(cfg, tok)
+    except Exception as e:
+        print(f"[PoE] WANLI load failed ({e}); WANLI skipped.")
+        wanli_loader = None
 
     # --- 1) bias model on hypothesis-only inputs ---
     hyp_train_loader = DataLoader(data["train_hyp"], batch_size=cfg.batch_size, shuffle=True, drop_last=True)
@@ -84,6 +89,8 @@ def train_poe_baseline(cfg: TrainConfig):
     poe_esnli = eval_esnli(main_model, esnli_loader, device)
     poe_anli = eval_anli(main_model, anli_loader, device)
     poe_snli_hard = eval_snli_hard(main_model, snli_hard_loader, device)
+    poe_wanli = (eval_wanli(main_model, wanli_loader, device)
+                 if wanli_loader is not None else {"wanli_accuracy": float("nan")})
 
     metrics = {
         "method": "PoE (hypothesis-only bias)",
@@ -92,6 +99,7 @@ def train_poe_baseline(cfg: TrainConfig):
         "esnli": poe_esnli,
         "anli": poe_anli,
         "snli_hard": poe_snli_hard,
+        "wanli": poe_wanli,
     }
     run_dir = os.path.join(cfg.output_dir, "poe_baseline")
     os.makedirs(run_dir, exist_ok=True)

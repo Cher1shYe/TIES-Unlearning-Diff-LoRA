@@ -69,6 +69,11 @@ ABLATIONS: Dict[str, Dict[str, Any]] = {
                         "kl_topk_candidates": 999},
     # --- lower bound ---
     "no_subtraction":  {"no_ties_ablation": True},
+    # --- rescue study: P-only + N-reweighting at different gamma (subtraction dropped,
+    #     since it is a net-negative component across all seeds). no_subtraction == gamma 2.0. ---
+    "nosub_g1":        {"no_ties_ablation": True, "phase3_debias_reweight": True, "phase3_reweight_gamma": 1.0},
+    "nosub_g3":        {"no_ties_ablation": True, "phase3_debias_reweight": True, "phase3_reweight_gamma": 3.0},
+    "nosub_g4":        {"no_ties_ablation": True, "phase3_debias_reweight": True, "phase3_reweight_gamma": 4.0},
 }
 
 

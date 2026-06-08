@@ -19,14 +19,14 @@ from torch.utils.data import DataLoader
 from configs.config import TrainConfig
 from data.dataloader import (
     set_seed, make_debias_datasets, make_hans_loader, make_esnli_test_loader,
-    make_anli_test_loader, make_snli_hard_test_loader,
+    make_anli_test_loader, make_snli_hard_test_loader, make_wanli_test_loader,
 )
 from training.bias_utils import (
     build_single_lora_model, train_bias_model, compute_logprobs,
     make_optimizer_and_schedule, run_training_loop,
 )
 from utils.optim_utils import _make_scaler
-from training.evaluate import eval_mnli, eval_hans, eval_esnli, eval_anli, eval_snli_hard
+from training.evaluate import eval_mnli, eval_hans, eval_esnli, eval_anli, eval_snli_hard, eval_wanli
 from transformers import AutoTokenizer
 
 
@@ -41,6 +41,11 @@ def train_zfilter_baseline(cfg: TrainConfig):
     esnli_loader = make_esnli_test_loader(cfg, tok)
     anli_loader = make_anli_test_loader(cfg, tok)
     snli_hard_loader = make_snli_hard_test_loader(cfg, tok)
+    try:
+        wanli_loader = make_wanli_test_loader(cfg, tok)
+    except Exception as e:
+        print(f"[z-filter] WANLI load failed ({e}); WANLI skipped.")
+        wanli_loader = None
 
     # --- 1) bias model ---
     hyp_train_loader = DataLoader(data["train_hyp"], batch_size=cfg.batch_size, shuffle=True, drop_last=True)
@@ -92,6 +97,8 @@ def train_zfilter_baseline(cfg: TrainConfig):
     zf_esnli = eval_esnli(model, esnli_loader, device)
     zf_anli = eval_anli(model, anli_loader, device)
     zf_snli_hard = eval_snli_hard(model, snli_hard_loader, device)
+    zf_wanli = (eval_wanli(model, wanli_loader, device)
+                if wanli_loader is not None else {"wanli_accuracy": float("nan")})
 
     metrics = {
         "method": "z-filtering (data-centric)",
@@ -100,6 +107,7 @@ def train_zfilter_baseline(cfg: TrainConfig):
         "esnli": zf_esnli,
         "anli": zf_anli,
         "snli_hard": zf_snli_hard,
+        "wanli": zf_wanli,
         "n_dropped": n_drop,
         "n_kept": len(keep_indices),
     }
