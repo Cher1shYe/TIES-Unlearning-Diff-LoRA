@@ -17,7 +17,7 @@ class LoRAConfig:
 @dataclass
 class TrainConfig:
     # --- jtt_setup ---
-    run_jtt: bool = True             # 默认为 False，用来跑 TIES_unlearn, 需要跑JTT的时候设置为True
+    run_jtt: bool = False            # 默认 False：main.py 跑 TIES-Unlearn(我们的方法,含A);需要跑 JTT baseline 时设为 True
     jtt_phase1_epochs: int = 3        # 对标你的 Phase 1
     jtt_upweight_factor: int = 4      # JTT 经典的错题放大倍数
 
