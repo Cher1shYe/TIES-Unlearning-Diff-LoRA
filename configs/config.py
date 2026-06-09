@@ -96,6 +96,9 @@ class TrainConfig:
     # subtraction give a net gain (H-nent 22.3 -> 30.8). Set reweight=False to ablate it.
     phase3_debias_reweight: bool = True
     phase3_reweight_gamma: float = 2.0
+    # Extra final P-only/N-only evaluation for rank-control sensitivity runs.
+    # Disabled by default because it adds evaluation passes to every training run.
+    record_branch_only_metrics: bool = False
 
     # --- debiasing baselines (PoE / z-filtering / bias model) ---
     bias_model_epochs: int = 3       # epochs to train the hypothesis-only bias model
