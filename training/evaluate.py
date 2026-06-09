@@ -59,6 +59,60 @@ def eval_hans(model, loader, device) -> Dict:
     }
 
 @torch.no_grad()
+def eval_pred_distribution(model, loader, device) -> Dict:
+    """3-class predicted-label histogram for whatever forward mode the model is
+    currently in. Used after Phase 2 (model in 'phase2' mode = base + ΔN only) to
+    check the N branch actually learned the shortcut FEATURE instead of collapsing
+    into a constant 'always-entailment' predictor.
+
+    A healthy N branch spreads its predictions across classes (and, on HANS, gets
+    a non-trivial non-entailment accuracy). A collapsed N puts ~all mass on one
+    class -> `max_class_frac` ≈ 1.0 and `collapsed` is True.
+
+    Also breaks predictions down by the TRUE label, so you can see e.g. that on
+    true non-entailment examples N still predicts entailment (the collapse symptom).
+    """
+    model.eval()
+    counts = torch.zeros(3, dtype=torch.long)              # pred histogram
+    by_true = {0: torch.zeros(3, dtype=torch.long),        # pred hist per true label
+               1: torch.zeros(3, dtype=torch.long),
+               2: torch.zeros(3, dtype=torch.long)}
+    total = 0
+    for batch in loader:
+        ids = batch["input_ids"].to(device)
+        mask = batch["attention_mask"].to(device)
+        labels = batch["label"]
+        preds = model(input_ids=ids, attention_mask=mask).logits.argmax(-1).cpu()
+        for c in range(3):
+            counts[c] += (preds == c).sum().item()
+        for t in range(3):
+            tm = labels == t
+            if tm.any():
+                pt = preds[tm]
+                for c in range(3):
+                    by_true[t][c] += (pt == c).sum().item()
+        total += labels.numel()
+
+    total = max(total, 1)
+    frac = (counts.float() / total).tolist()
+    max_frac = max(frac)
+    out = {
+        "n": int(total),
+        "pred_entailment": frac[0],
+        "pred_neutral": frac[1],
+        "pred_contradiction": frac[2],
+        "max_class_frac": max_frac,
+        "collapsed": bool(max_frac >= 0.90),   # ~one-class predictor
+    }
+    # Per-true-label predicted-entailment rate: on true non-entailment (labels 1/2),
+    # a high value == the shortcut collapse symptom (N says "entailment" anyway).
+    for t, name in {0: "true_entailment", 1: "true_neutral", 2: "true_contradiction"}.items():
+        tt = int(by_true[t].sum().item())
+        out[f"{name}_pred_entail_rate"] = (by_true[t][0].item() / tt) if tt else None
+    return out
+
+
+@torch.no_grad()
 def _eval_pair_accuracy(model, loader, device, key: str) -> Dict[str, float]:
     """3-class premise+hypothesis accuracy. Shared by e-SNLI / ANLI / SNLI-hard."""
     model.eval()

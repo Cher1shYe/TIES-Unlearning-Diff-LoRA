@@ -34,7 +34,7 @@ from models.surgery import (
 from models.ties_lora import set_model_forward_mode
 from models.analyzer import analyze_shortcut_layers
 from utils.optim_utils import _split_params, _make_scaler, _amp_enabled, _log_lora_norms, _save_checkpoint, _load_checkpoint
-from training.evaluate import eval_mnli, eval_hans, eval_esnli, eval_anli, eval_snli_hard, eval_wanli
+from training.evaluate import eval_mnli, eval_hans, eval_esnli, eval_anli, eval_snli_hard, eval_wanli, eval_pred_distribution
 
 
 def train_ties_unlearn(cfg: TrainConfig, resume_from_checkpoint_path: Optional[str] = None):
@@ -249,8 +249,28 @@ def train_ties_unlearn(cfg: TrainConfig, resume_from_checkpoint_path: Optional[s
         print(f"  Phase2 HANS: overall={p2_hans['hans_overall']:.4f} "
               f"ent={p2_hans['hans_entailment']:.4f} "
               f"non-ent={p2_hans['hans_non_entailment']:.4f}")
+
+        # --- N-branch sanity check (model is still in "phase2" mode = base + ΔN) ---
+        # Confirms the N branch learned the shortcut FEATURE instead of collapsing
+        # to a constant 'always-entailment' predictor (the old failure mode).
+        p2_ndist = eval_pred_distribution(model, hans_loader, device)
+        print(f"  [N-branch check] HANS pred dist: "
+              f"ent={p2_ndist['pred_entailment']:.2%} "
+              f"neu={p2_ndist['pred_neutral']:.2%} "
+              f"con={p2_ndist['pred_contradiction']:.2%} "
+              f"| on true-non-ent it still predicts entail: "
+              f"neu={p2_ndist['true_neutral_pred_entail_rate']}")
+        if p2_ndist["collapsed"]:
+            print(f"  [N-branch check] ⚠️  COLLAPSED: {p2_ndist['max_class_frac']:.1%} "
+                  f"of predictions are one class — N did NOT learn the shortcut feature. "
+                  f"Lower neg_lr_mult or check phase2_shortcut_source.")
+        else:
+            print(f"  [N-branch check] ✅ predictions spread across classes "
+                  f"(max {p2_ndist['max_class_frac']:.1%}) — N learned a feature, not a constant.")
+
         _log_lora_norms(model)
-        metrics["phase2"] = {"mnli": p2_mnli, "hans": p2_hans, "esnli": p2_esnli}
+        metrics["phase2"] = {"mnli": p2_mnli, "hans": p2_hans, "esnli": p2_esnli,
+                             "n_branch_pred_dist": p2_ndist}
 
         if cfg.save_checkpoints_per_phase:
             phase2_metrics_to_save = {"mnli": p2_mnli, "hans": p2_hans, "esnli": p2_esnli}

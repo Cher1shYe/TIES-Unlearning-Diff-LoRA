@@ -67,6 +67,22 @@ ABLATIONS: Dict[str, Dict[str, Any]] = {
     "knn_only":        {"merge_mode": "full", "enable_layerwise_analysis": True,
                         "knn_mode": "pd_and_early_wrong", "kl_weight": 0.0,
                         "kl_topk_candidates": 999},
+    # --- beta calibration (over-subtraction fix) ----------------------------------
+    # Under the new mnli_overlap protocol the N branch actually learns the overlap
+    # shortcut, so ΔN is now a strong direction and the old beta=0.5 OVER-subtracts:
+    # the merged model flips to "always non-entailment" on HANS (H-ent→0, H-nent→100,
+    # MNLI 85→72). `full_b0.2` is the recommended single re-run: identical to `full`
+    # but with a gentler beta=0.2 so the subtraction nudges instead of flipping.
+    # Sanity targets: H-ent should stay ~90%+, MNLI ~85%, and H-nent should land
+    # above the P-only ~11% (a real gain, not the degenerate 100%).
+    "full_b0.2":       {"merge_mode": "full", "enable_layerwise_analysis": True, "beta": 0.2},
+    # Recommended single re-run: treat BOTH failure mechanisms at once — gentler beta
+    # so the subtraction does not flip the model, AND softer Phase-3 reweighting
+    # (gamma 2.0 -> 1.0) so Phase-3 can restore legitimate high-overlap entailment
+    # (which gamma=2.0 down-weighted to ~0, locking H-ent at 0 and MNLI at 72).
+    "full_best":       {"merge_mode": "full", "enable_layerwise_analysis": True,
+                        "beta": 0.2, "phase3_reweight_gamma": 1.0},
+
     # --- lower bound ---
     "no_subtraction":  {"no_ties_ablation": True},
     # --- rescue study: P-only + N-reweighting at different gamma (subtraction dropped,
