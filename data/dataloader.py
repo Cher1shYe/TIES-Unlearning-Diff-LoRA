@@ -1,4 +1,5 @@
 import random
+import re
 import numpy as np
 import csv
 import json
@@ -290,6 +291,76 @@ def make_phase2_biased_mixed_loader(cfg: TrainConfig, tok):
 
     mixed = parts[0] if len(parts) == 1 else concatenate_datasets(parts)
     mixed = mixed.shuffle(seed=cfg.seed + 813)
+    mixed.set_format(type="torch", columns=["input_ids", "attention_mask", "label"])
+    return DataLoader(mixed, batch_size=cfg.batch_size, shuffle=True, drop_last=True)
+
+# ── Self-discovered lexical-overlap shortcut data (MNLI-derived, HANS-free) ──────
+_OV_WORD_RE = re.compile(r"[a-z0-9]+")
+# Drop function words so "overlap" reflects content-word coverage, like HANS lexical_overlap.
+_OV_STOP = set(
+    "a an the of to in on at for and or but is are was were be been being do does did "
+    "this that these those with as by from it its his her their our your my no not".split()
+)
+
+def _lexical_overlap_score(premise: str, hypothesis: str) -> float:
+    """Fraction of hypothesis content-words that also appear in the premise.
+    Mirrors the HANS 'lexical_overlap' heuristic but computed on MNLI, so we can
+    self-discover overlap-biased examples WITHOUT ever touching HANS."""
+    p = {w for w in _OV_WORD_RE.findall((premise or "").lower()) if w not in _OV_STOP}
+    h = [w for w in _OV_WORD_RE.findall((hypothesis or "").lower()) if w not in _OV_STOP]
+    if not h:
+        return 0.0
+    return sum(1 for w in h if w in p) / len(h)
+
+def make_phase2_overlap_biased_loader(cfg: TrainConfig, tok):
+    """Phase-2 N-branch training data, self-discovered from MNLI (HANS-free).
+
+    Builds a LABEL-BALANCED overlap-biased set so the N branch must learn the
+    lexical-overlap *feature* instead of collapsing to a constant 'always-entailment'
+    predictor (the failure the old 90%-HANS-entailment loader caused):
+      * high-overlap + entailment      (overlap -> entailment, shortcut-aligned)
+      * low-overlap  + non-entailment  (neutral / contradiction)
+    The two groups are 1:1 balanced, so a majority-class shortcut gets no traction:
+    the only way to fit the data is to key on overlap. HANS is never used here
+    (leakage-free: HANS stays a strictly unseen test set).
+    """
+    total = int(cfg.phase2_epoch_batches) * int(cfg.batch_size)
+    half = total // 2
+    hi, lo = cfg.overlap_high_thresh, cfg.overlap_low_thresh
+
+    mnli = load_dataset("nyu-mll/glue", "mnli")["train"]
+    # Compute overlap on a shuffled pool large enough to yield both groups
+    # (no need to score all ~390k examples).
+    pool_n = min(len(mnli), max(total * 8, 80_000))
+    pool = mnli.shuffle(seed=cfg.seed + 901).select(range(pool_n))
+    pool = pool.map(
+        lambda b: {"_ov": [_lexical_overlap_score(p, h)
+                           for p, h in zip(b["premise"], b["hypothesis"])]},
+        batched=True,
+    )
+
+    aligned_ent = pool.filter(lambda ex: ex["label"] == 0 and ex["_ov"] >= hi)
+    aligned_non = pool.filter(lambda ex: ex["label"] in (1, 2) and ex["_ov"] <= lo)
+
+    k = min(half, len(aligned_ent), len(aligned_non))
+    if k == 0:
+        raise ValueError(
+            f"overlap-biased loader is empty (high-ov entailment={len(aligned_ent)}, "
+            f"low-ov non-entailment={len(aligned_non)}); loosen overlap thresholds "
+            f"or enlarge the pool.")
+    if k < half:
+        print(f"[Phase2] WARNING: only {k} examples/group available (< {half}); "
+              f"using {2*k} total. Enlarge pool or loosen thresholds for more.")
+
+    ent = aligned_ent.shuffle(seed=cfg.seed + 902).select(range(k))
+    non = aligned_non.shuffle(seed=cfg.seed + 903).select(range(k))
+    print(f"[Phase2] overlap-biased (MNLI, HANS-free): {k} high-ov entailment + "
+          f"{k} low-ov non-entailment, balanced (hi>={hi}, lo<={lo})")
+
+    mixed = concatenate_datasets([ent, non])
+    mixed = mixed.map(lambda b: _tokenize_pair(tok, b, cfg.max_seq_length), batched=True)
+    mixed = _select_phase2_train_columns(mixed)
+    mixed = mixed.shuffle(seed=cfg.seed + 904)
     mixed.set_format(type="torch", columns=["input_ids", "attention_mask", "label"])
     return DataLoader(mixed, batch_size=cfg.batch_size, shuffle=True, drop_last=True)
 

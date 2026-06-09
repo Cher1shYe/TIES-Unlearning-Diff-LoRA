@@ -22,7 +22,8 @@ except ImportError:
 from configs.config import TrainConfig, LoRAConfig
 from data.dataloader import (
     set_seed, make_mnli_loaders, make_hans_loader,
-    make_phase2_biased_mixed_loader, make_phase2_5_analysis_loaders,
+    make_phase2_biased_mixed_loader, make_phase2_overlap_biased_loader,
+    make_phase2_5_analysis_loaders,
     make_esnli_test_loader, make_anli_test_loader, make_snli_hard_test_loader,
     make_wanli_test_loader,
 )
@@ -48,7 +49,10 @@ def train_ties_unlearn(cfg: TrainConfig, resume_from_checkpoint_path: Optional[s
     tok = AutoTokenizer.from_pretrained(cfg.model_name, use_fast=True)
     train_loader, val_loader = make_mnli_loaders(cfg, tok)
     hans_loader = make_hans_loader(cfg, tok)
-    phase2_train_loader = make_phase2_biased_mixed_loader(cfg, tok)
+    if cfg.phase2_shortcut_source == "mnli_overlap":
+        phase2_train_loader = make_phase2_overlap_biased_loader(cfg, tok)
+    else:
+        phase2_train_loader = make_phase2_biased_mixed_loader(cfg, tok)
     esnli_loader = make_esnli_test_loader(cfg, tok)
     anli_loader = make_anli_test_loader(cfg, tok)
     snli_hard_loader = make_snli_hard_test_loader(cfg, tok)

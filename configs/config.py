@@ -109,7 +109,16 @@ class TrainConfig:
     # Phase2 数据混合：MNLI 占比 + HANS entailment 占比 (其余)
     phase2_mnli_mix_ratio: float = 0.10
     phase2_epoch_batches: int = 3125
-    neg_lr_mult: float = 2.0    # Phase-1 lr multiplier for N
+    # Phase-2 shortcut data source for training the N branch:
+    #   "hans"         -> original: 90% HANS-entailment + MNLI (causes N to collapse to a
+    #                     constant 'always-entailment' predictor, and leaks HANS into training)
+    #   "mnli_overlap" -> HANS-free: a LABEL-BALANCED overlap-biased set self-discovered from
+    #                     MNLI (high-overlap entailment vs low-overlap non-entailment), so N is
+    #                     forced to learn the overlap feature; HANS stays a strictly unseen test.
+    phase2_shortcut_source: str = "mnli_overlap"
+    overlap_high_thresh: float = 0.9   # hypothesis-coverage >= this => high overlap (shortcut entailment)
+    overlap_low_thresh: float = 0.5    # hypothesis-coverage <= this => low overlap (non-entailment)
+    neg_lr_mult: float = 0.5    # Phase-2 lr multiplier for N (lowered from 2.0: high lr over-trained N into a constant 'always-entailment' predictor)
     neg_lr_mult_p3: float = 0.3 # Phase-3 lr multiplier for N (keep small)
     neg_reg_lambda: float = 0.001
 
