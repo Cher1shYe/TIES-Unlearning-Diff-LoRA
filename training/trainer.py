@@ -421,6 +421,35 @@ def train_ties_unlearn(cfg: TrainConfig, resume_from_checkpoint_path: Optional[s
     metrics["phase3"] = {"mnli": p3_mnli, "hans": p3_hans, "esnli": p3_esnli,
                          "anli": p3_anli, "snli_hard": p3_snli_hard, "wanli": p3_wanli}
 
+    if cfg.record_branch_only_metrics:
+        print("  Recording final branch-only evaluations (P-only and N-only).")
+
+        set_model_forward_mode(model, "phase1")
+        p_only_mnli = eval_mnli(model, val_loader, device)
+        p_only_hans = eval_hans(model, hans_loader, device)
+        p_only_esnli = eval_esnli(model, esnli_loader, device)
+        p_only_anli = eval_anli(model, anli_loader, device)
+        p_only_snli_hard = eval_snli_hard(model, snli_hard_loader, device)
+        p_only_wanli = (eval_wanli(model, wanli_loader, device)
+                        if wanli_loader is not None else {"wanli_accuracy": float("nan")})
+
+        set_model_forward_mode(model, "phase2")
+        n_only_mnli = eval_mnli(model, val_loader, device)
+        n_only_hans = eval_hans(model, hans_loader, device)
+        n_only_esnli = eval_esnli(model, esnli_loader, device)
+        n_only_anli = eval_anli(model, anli_loader, device)
+        n_only_snli_hard = eval_snli_hard(model, snli_hard_loader, device)
+        n_only_wanli = (eval_wanli(model, wanli_loader, device)
+                        if wanli_loader is not None else {"wanli_accuracy": float("nan")})
+
+        set_model_forward_mode(model, "eval")
+        metrics["branch_only"] = {
+            "p_only": {"mnli": p_only_mnli, "hans": p_only_hans, "esnli": p_only_esnli,
+                       "anli": p_only_anli, "snli_hard": p_only_snli_hard, "wanli": p_only_wanli},
+            "n_only": {"mnli": n_only_mnli, "hans": n_only_hans, "esnli": n_only_esnli,
+                       "anli": n_only_anli, "snli_hard": n_only_snli_hard, "wanli": n_only_wanli},
+        }
+
     # --- save ---
     run_dir = os.path.join(cfg.output_dir, cfg.experiment_name)
     os.makedirs(run_dir, exist_ok=True)

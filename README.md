@@ -147,10 +147,22 @@ results and start over.
 
 **Hyperparameter sensitivity** (`run_sensitivity.py` + `plot_sensitivity.py`) — one-at-a-time
 sweep over every parameter named in the reviews (`r_P`, `r_N`, `alpha`, `beta`, `trim_ratio`,
-`phase2_mnli_mix_ratio`, `layer_selection_topk`, `neg_lr_mult`, `target_modules`):
+`phase2_mnli_mix_ratio`, `layer_selection_topk`, `neg_lr_mult`, `target_modules`). By default,
+the script also includes MR.4 rank controls: equal-rank settings, a reversed-rank setting, and
+final P-only/N-only branch evaluations for those controls:
+
+Use `python run_sensitivity.py --small --only rank_controls` to run only these controls, or
+`python run_sensitivity.py --small --skip-rank-controls` to reproduce the original OAT grid.
+Rank-control runs additionally write `rank_control_summary.md`, comparing merged, P-only, and
+N-only metrics for the default rank-differential setting, equal-rank controls, and reversed ranks.
+The reduced-budget MR.4 outputs used for the revision are checked in under
+`ties_results/mr4_rank_controls_small/`, with teammate-facing notes in
+`MR4_REVISION_NOTES.md`.
 
 ```bash
 python run_sensitivity.py --small            # → sensitivity_results/sensitivity_summary.json
+python run_sensitivity.py --small --only rank_controls --output-dir ./ties_results/mr4_rank_controls_small
+python plot_mr4_rank_controls.py --results-dir ./ties_results/mr4_rank_controls_small
 python plot_sensitivity.py                   # → one PNG per parameter + sensitivity_table.md
 ```
 

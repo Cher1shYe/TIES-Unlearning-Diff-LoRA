@@ -1,0 +1,5 @@
+control,short_label,relation,pos_rank,neg_rank,merged_mnli,merged_esnli,merged_anli,merged_snli_hard,merged_wanli,merged_hans_entailment,merged_hans_non_entailment,p_branch_mnli,p_branch_hans_entailment,p_branch_hans_non_entailment,n_branch_mnli,n_branch_hans_entailment,n_branch_hans_non_entailment,branch_eval_source
+default_differential,Default diff,rank_differential,16,4,82.45,79.81473941368078,27.5625,71.35847899417357,54.6,96.41999999999999,7.333333333333333,82.05,98.72,5.06,34.8,100.0,0.0,final_branch_only
+equal_rank_low,Equal low,equal,4,4,80.10000000000001,78.62377850162866,27.6875,70.99049371358478,56.36,94.42,20.946666666666665,80.75,97.56,13.84,68.95,100.0,0.0,final_branch_only
+equal_rank_high,Equal high,equal,16,16,80.95,78.10464169381108,28.031250000000004,70.03986507206379,54.96,95.00666666666666,10.833333333333334,81.39999999999999,98.54666666666667,5.346666666666667,68.35,100.0,0.0,final_branch_only
+reversed_rank_default,Reversed,reversed,4,16,81.75,78.62377850162866,27.84375,70.56117755289787,54.879999999999995,98.82666666666667,4.6,80.60000000000001,99.27333333333334,4.2,32.75,100.0,0.0,final_branch_only
