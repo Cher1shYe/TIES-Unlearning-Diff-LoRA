@@ -76,6 +76,10 @@ ABLATIONS: Dict[str, Dict[str, Any]] = {
     # Sanity targets: H-ent ~90%+, MNLI ~85%, H-nent above the no_subtraction lower bound
     # (a real gain, not the degenerate all-non-entailment 100%).
     "full_b0.2":       {"merge_mode": "full", "enable_layerwise_analysis": True, "beta": 0.2},
+    # Dose-response probe: beta 0.2 vs 0.5 were behaviourally identical (masked ΔN is only
+    # a ~3-7% perturbation of αΔP on the 4 selected layers), so push the dose up. Safe now:
+    # plain Phase-3 FT restores MNLI, and post_merge_pre_ft records the merge-time effect.
+    "full_b1.0":       {"merge_mode": "full", "enable_layerwise_analysis": True, "beta": 1.0},
     # Optional third run, only after the two plain-FT runs: reweighting ON with the
     # per-gold-class normalized weights (prior-drift fixed in trainer.py). Tests whether
     # N-guided reweighting adds anything on top of plain FT once N is functional.

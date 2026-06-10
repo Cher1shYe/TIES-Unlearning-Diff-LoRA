@@ -1,14 +1,31 @@
 [
   {
-    "ablation": "full_best",
-    "mnli_accuracy": 0.7864,
-    "esnli_accuracy": 0.7514250814332247,
-    "anli_accuracy": 0.3275,
-    "snli_hard_accuracy": 0.6721864458754984,
-    "wanli_accuracy": 0.5534,
-    "hans_overall": 0.5177333333333334,
-    "hans_entailment": 0.0522,
-    "hans_non_entailment": 0.9832666666666666,
+    "ablation": "full",
+    "mnli_accuracy": 0.854,
+    "esnli_accuracy": 0.8083265472312704,
+    "anli_accuracy": 0.288125,
+    "snli_hard_accuracy": 0.7347439435755904,
+    "wanli_accuracy": 0.5842,
+    "hans_overall": 0.6237333333333334,
+    "hans_entailment": 0.9572,
+    "hans_non_entailment": 0.2902666666666667,
+    "selected_layers": [
+      "encoder.layer.8",
+      "encoder.layer.9",
+      "encoder.layer.10",
+      "encoder.layer.11"
+    ]
+  },
+  {
+    "ablation": "full_b0.2",
+    "mnli_accuracy": 0.8528,
+    "esnli_accuracy": 0.8086319218241043,
+    "anli_accuracy": 0.2865625,
+    "snli_hard_accuracy": 0.7362772155780436,
+    "wanli_accuracy": 0.583,
+    "hans_overall": 0.6240333333333333,
+    "hans_entailment": 0.9601333333333333,
+    "hans_non_entailment": 0.2879333333333333,
     "selected_layers": [
       "encoder.layer.8",
       "encoder.layer.9",

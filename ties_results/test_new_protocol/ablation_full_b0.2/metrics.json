@@ -24,7 +24,7 @@
     "pos_rank": 16,
     "neg_rank": 4,
     "alpha": 1.25,
-    "beta": 0.5,
+    "beta": 0.2,
     "lora_alpha": 16,
     "lora_dropout": 0.1,
     "trim_ratio": 0.2,
@@ -69,7 +69,7 @@
     "run_baseline": false,
     "output_dir": "/content/drive/MyDrive/ties_results/test_new_protocol",
     "save_checkpoints": false,
-    "experiment_name": "ablation_full",
+    "experiment_name": "ablation_full_b0.2",
     "save_checkpoints_per_phase": false,
     "checkpoint_dir": null
   },
@@ -80,11 +80,11 @@
       0.38817303560733796,
       0.32402746492646795,
       0.2017397629563205,
-      0.35620142109394076,
-      0.34358625787734987,
-      0.33058137637376783,
-      0.32019750120282175,
-      0.31519276401758195
+      0.35668955839157107,
+      0.3434874944782257,
+      0.33053375900268556,
+      0.320205045273304,
+      0.3152890405523777
     ],
     "val_acc": [
       0.8342,
@@ -92,11 +92,11 @@
       0.8538,
       0.7016,
       0.7184,
-      0.853,
-      0.8556,
+      0.8532,
       0.8548,
-      0.8552,
-      0.854
+      0.8554,
+      0.8556,
+      0.8528
     ],
     "phase": [
       1,
@@ -674,45 +674,45 @@
     ],
     "post_merge_pre_ft": {
       "mnli": {
-        "mnli_accuracy": 0.8502
+        "mnli_accuracy": 0.851
       },
       "hans": {
-        "hans_overall": 0.5720666666666666,
-        "hans_entailment": 0.9808,
-        "hans_non_entailment": 0.16333333333333333,
+        "hans_overall": 0.5719666666666666,
+        "hans_entailment": 0.9800666666666666,
+        "hans_non_entailment": 0.16386666666666666,
         "heuristic_breakdown": {
-          "lexical_overlap": 0.5345,
-          "subsequence": 0.5521,
-          "constituent": 0.6296
+          "lexical_overlap": 0.5366,
+          "subsequence": 0.5546,
+          "constituent": 0.6247
         }
       }
     }
   },
   "phase3": {
     "mnli": {
-      "mnli_accuracy": 0.854
+      "mnli_accuracy": 0.8528
     },
     "hans": {
-      "hans_overall": 0.6237333333333334,
-      "hans_entailment": 0.9572,
-      "hans_non_entailment": 0.2902666666666667,
+      "hans_overall": 0.6240333333333333,
+      "hans_entailment": 0.9601333333333333,
+      "hans_non_entailment": 0.2879333333333333,
       "heuristic_breakdown": {
-        "lexical_overlap": 0.5908,
-        "subsequence": 0.5979,
-        "constituent": 0.6825
+        "lexical_overlap": 0.588,
+        "subsequence": 0.5997,
+        "constituent": 0.6844
       }
     },
     "esnli": {
-      "esnli_accuracy": 0.8083265472312704
+      "esnli_accuracy": 0.8086319218241043
     },
     "anli": {
-      "anli_accuracy": 0.288125
+      "anli_accuracy": 0.2865625
     },
     "snli_hard": {
-      "snli_hard_accuracy": 0.7347439435755904
+      "snli_hard_accuracy": 0.7362772155780436
     },
     "wanli": {
-      "wanli_accuracy": 0.5842
+      "wanli_accuracy": 0.583
     }
   }
 }
