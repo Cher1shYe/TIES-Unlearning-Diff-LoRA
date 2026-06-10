@@ -362,7 +362,40 @@ def make_phase2_overlap_biased_loader(cfg: TrainConfig, tok):
     mixed = _select_phase2_train_columns(mixed)
     mixed = mixed.shuffle(seed=cfg.seed + 904)
     mixed.set_format(type="torch", columns=["input_ids", "attention_mask", "label"])
-    return DataLoader(mixed, batch_size=cfg.batch_size, shuffle=True, drop_last=True)
+    loader = DataLoader(mixed, batch_size=cfg.batch_size, shuffle=True, drop_last=True)
+    # Surfaced in metrics: a small k means N sees few unique examples and may
+    # memorize them instead of learning the overlap feature.
+    loader.overlap_group_size = k
+    return loader
+
+def make_overlap_diagnostic_loader(cfg: TrainConfig, tok, n_per_group: int = 1000):
+    """HANS-free shortcut diagnostic set, built from MNLI validation_matched.
+
+    Takes the `n_per_group` examples with the HIGHEST lexical-overlap score and
+    the `n_per_group` with the LOWEST, keeping gold labels. Used after Phase 2
+    to verify the N branch keys on the overlap FEATURE: a shortcut-aligned N
+    predicts entailment on the high group (even where the gold label is
+    non-entailment) and not on the low group, giving a large entailment-rate
+    gap between groups. validation_matched is disjoint from the MNLI train pool
+    that builds the Phase-2 data, and HANS is never touched.
+    """
+    val = load_dataset("nyu-mll/glue", "mnli")["validation_matched"]
+    val = val.map(
+        lambda b: {"_ov": [_lexical_overlap_score(p, h)
+                           for p, h in zip(b["premise"], b["hypothesis"])]},
+        batched=True,
+    )
+    order = np.argsort(np.asarray(val["_ov"]))
+    n = min(n_per_group, len(val) // 2)
+    low = val.select(order[:n].tolist()).map(lambda ex: {"ov_group": 0})
+    high = val.select(order[-n:].tolist()).map(lambda ex: {"ov_group": 1})
+    print(f"[Phase2-diag] overlap diagnostic: {n}/group, "
+          f"mean ov low={float(np.mean(low['_ov'])):.2f} high={float(np.mean(high['_ov'])):.2f}")
+    diag = concatenate_datasets([low, high])
+    diag = diag.map(lambda b: _tokenize_pair(tok, b, cfg.max_seq_length), batched=True)
+    diag = diag.map(lambda ex: {"label": int(ex["label"])})
+    diag.set_format(type="torch", columns=["input_ids", "attention_mask", "label", "ov_group"])
+    return DataLoader(diag, batch_size=cfg.batch_size, shuffle=False)
 
 def _split_for_reference_and_query(ds: Dataset, ref_n: int, query_n: int, seed: int) -> Tuple[Dataset, Dataset]:
     # Shuffle first then slice to ensure reference/query are clearly separated and avoid information leakage.

@@ -7,7 +7,7 @@ Traditional **$W_{high} - W_{low}$** parameter subtraction often degrades a mode
 * Phase 1 (Learn Task): Freeze the N-path; train the classification head and high-rank P-LoRA.
 * Phase 2 (Capture Shortcut): Freeze the P-path and classification head; train low-rank N-LoRA on biased mixed data.
 * Phase 2.5 (Layer-wise Analysis): Freeze the entire model. Automatically identify the layers with the most severe shortcuts using symmetric KL divergence and kNN feature clustering scores.
-* Phase 3 (TIES Fine-tuning + debias reweighting): Execute TIES merging (sign alignment and magnitude trimming) strictly on the selected layers, then fine-tune the head + P-path to recover MNLI. Crucially, this fine-tuning is **re-weighted by the frozen N (shortcut) path**: examples the shortcut already solves are down-weighted by `w = (1 − p_N)^γ`, so recovering task accuracy cannot re-learn the shortcut it just removed. Without this step, Phase-3 re-injects the bias and the subtraction yields *no* net robustness gain; with it, HANS non-entailment improves above the no-subtraction lower bound. Controlled by `phase3_debias_reweight` (on by default).
+* Phase 3 (TIES Fine-tuning): Execute TIES merging (sign alignment and magnitude trimming) strictly on the selected layers, then fine-tune the head + P-path on plain MNLI to recover utility. An optional **N-guided reweighting** (`phase3_debias_reweight`, off by default) down-weights examples the frozen N path already solves by `w = (1 − p_N)^γ`, normalized **per gold class**. Historical note: under the old leaky-HANS protocol the N branch collapsed to a constant predictor, which silently turned this reweighting into a JTT-style class rebalance — that artifact, not N-guidance, produced its apparent gain; with a functional N the original globally-normalized weights drift the label prior and flip HANS, hence the per-class normalization and the off-by-default setting.
 
 ## Evaluation & Leakage-free Protocol
 
@@ -81,9 +81,9 @@ You can easily customize the experiment by modifying the parameters in `configs/
 
     * `phase2_mnli_mix_ratio` (default: 0.10): The proportion of MNLI data mixed with HANS entailment data during Phase 2 shortcut capture.
 
-* Phase-3 debias reweighting (the proposed fix — **on by default**):
+* Phase-3 N-guided reweighting (optional — **off by default**, see Phase 3 note above):
 
-    * `phase3_debias_reweight` (default: True): down-weight shortcut-solvable examples during Phase-3 using the frozen N path, so debias fine-tuning cannot re-learn the shortcut.
+    * `phase3_debias_reweight` (default: False): down-weight shortcut-solvable examples during Phase-3 using the frozen N path (per-gold-class normalized weights).
 
     * `phase3_reweight_gamma` (default: 2.0): strength of the down-weighting `w=(1−p_N)^γ`.
 
@@ -119,11 +119,12 @@ python run_baselines.py --small --only ties_full negmerge poe
 python run_ablations.py            # → ablation_results/ablation_summary.{json,md}
 ```
 
-Merge-mask family (localization + Phase-3 fixed): `full` (the full proposed method, **with**
-debias reweighting), `naive_mask`, `sign_only`, `trim_only`, `no_phase3`. Layer-localization
-family (full mask): `global`, `random`, `kl_only`, `knn_only`. Phase-3 debiasing: `no_reweight`
-(ablate the N-reweighting — shows its contribution vs `full`), `full_lockP` (alternative fix:
-freeze the subtracted layers' P in Phase-3 instead of reweighting). Lower bound: `no_subtraction`.
+Merge-mask family (localization + Phase-3 fixed): `full` (the full proposed method, plain
+Phase-3 FT), `naive_mask`, `sign_only`, `trim_only`, `no_phase3`. Layer-localization
+family (full mask): `global`, `random`, `kl_only`, `knn_only`. Beta calibration under plain
+Phase-3 FT: `full` (β=0.5) vs `full_b0.2` (β=0.2). Phase-3 reweighting variants: `full_best`
+(reweight ON, per-class normalized, β=0.2/γ=1.0), `no_reweight` (legacy, now identical to
+`full`), `full_lockP` (freeze the subtracted layers' P in Phase-3). Lower bound: `no_subtraction`.
 
 These map onto new `TrainConfig` knobs: `merge_mode` (`full|naive|sign_only|trim_only|p_only`),
 `random_layer_selection`, `phase3_debias_reweight` / `phase3_reweight_gamma` (Phase-3 N-reweighting),

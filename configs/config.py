@@ -89,12 +89,16 @@ class TrainConfig:
     # head + the non-subtracted layers' P are tuned to recover MNLI. Fix (B) for the
     # "Phase-3 re-injects the shortcut" failure mode. Default False = original behaviour.
     phase3_freeze_subtracted_p: bool = False
-    # Fix (A) — NOW PART OF THE DEFAULT METHOD. Re-weight the Phase-3 debias FT loss using
-    # the frozen N (shortcut) path. Examples the N path already classifies correctly with
-    # high confidence (i.e. solvable by the shortcut) get down-weighted by w=(1-p_N)^gamma,
-    # so recovering MNLI cannot re-learn the shortcut from the data. This is what makes the
-    # subtraction give a net gain (H-nent 22.3 -> 30.8). Set reweight=False to ablate it.
-    phase3_debias_reweight: bool = True
+    # Fix (A) — DEFAULT OFF under the new mnli_overlap protocol. Under the old (leaky HANS)
+    # protocol the N branch was a collapsed CONSTANT predictor, so p_N depended only on the
+    # gold label and this reweighting degenerated into a JTT-style class rebalance — that,
+    # not N-guidance, is where the old gain came from (H-nent 22.3 -> 30.8). With a
+    # functional N (MNLI ~72%), p_N is example-specific and class-skewed: the reweighting
+    # then drifts the effective label prior and flips HANS to 'never entailment' (ent -> 5%),
+    # at ANY usable gamma. The weights are now normalized per gold class in trainer.py,
+    # which removes the prior drift, but the reweight stays OFF by default so Phase-3
+    # matches the original plain-FT logic; enable it only for a controlled comparison.
+    phase3_debias_reweight: bool = False
     phase3_reweight_gamma: float = 2.0
 
     # --- debiasing baselines (PoE / z-filtering / bias model) ---

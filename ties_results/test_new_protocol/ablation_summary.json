@@ -1,14 +1,14 @@
 [
   {
-    "ablation": "full",
-    "mnli_accuracy": 0.7206,
-    "esnli_accuracy": 0.6846498371335505,
-    "anli_accuracy": 0.3546875,
-    "snli_hard_accuracy": 0.6126954921803128,
-    "wanli_accuracy": 0.5174,
-    "hans_overall": 0.5014666666666666,
-    "hans_entailment": 0.0029333333333333334,
-    "hans_non_entailment": 1.0,
+    "ablation": "full_best",
+    "mnli_accuracy": 0.7864,
+    "esnli_accuracy": 0.7514250814332247,
+    "anli_accuracy": 0.3275,
+    "snli_hard_accuracy": 0.6721864458754984,
+    "wanli_accuracy": 0.5534,
+    "hans_overall": 0.5177333333333334,
+    "hans_entailment": 0.0522,
+    "hans_non_entailment": 0.9832666666666666,
     "selected_layers": [
       "encoder.layer.8",
       "encoder.layer.9",

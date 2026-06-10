@@ -44,16 +44,17 @@ from training.trainer import train_ties_unlearn
 # tag -> dict of TrainConfig overrides applied on top of the base config.
 ABLATIONS: Dict[str, Dict[str, Any]] = {
     # --- merge-mask family (localization on, phase-3 on) ---
-    # The proposed full method = sign+trim merge + layer localization + Phase-3 debias FT
-    # WITH N-reweighting (Fix A, now the default). Explicit here for documentation.
-    "full":            {"merge_mode": "full", "enable_layerwise_analysis": True,
-                        "phase3_debias_reweight": True, "phase3_reweight_gamma": 2.0},
+    # The proposed full method = sign+trim merge + layer localization + plain Phase-3 FT.
+    # N-reweighting is OFF by default now: its old gain was a JTT-style class-rebalance
+    # artifact of the collapsed N, and with a functional N it flips the label prior
+    # (see config.phase3_debias_reweight).
+    "full":            {"merge_mode": "full", "enable_layerwise_analysis": True},
     "naive_mask":      {"merge_mode": "naive", "enable_layerwise_analysis": True},
     "sign_only":       {"merge_mode": "sign_only", "enable_layerwise_analysis": True},
     "trim_only":       {"merge_mode": "trim_only", "enable_layerwise_analysis": True},
     "no_phase3":       {"merge_mode": "full", "enable_layerwise_analysis": True, "phase3_epochs": 0},
-    # Ablate Fix (A): full method but WITHOUT N-reweighting in Phase-3 (the old behaviour,
-    # where debias FT re-injects the shortcut). This is the key row showing A's contribution.
+    # Legacy tag: now identical to `full` (reweight already off by default). Kept so old
+    # summaries / --only invocations keep working.
     "no_reweight":     {"merge_mode": "full", "enable_layerwise_analysis": True,
                         "phase3_debias_reweight": False},
     # Alternative fix (B), kept for comparison against (A): freeze the subtracted layers' P
@@ -67,26 +68,26 @@ ABLATIONS: Dict[str, Dict[str, Any]] = {
     "knn_only":        {"merge_mode": "full", "enable_layerwise_analysis": True,
                         "knn_mode": "pd_and_early_wrong", "kl_weight": 0.0,
                         "kl_topk_candidates": 999},
-    # --- beta calibration (over-subtraction fix) ----------------------------------
-    # Under the new mnli_overlap protocol the N branch actually learns the overlap
-    # shortcut, so ΔN is now a strong direction and the old beta=0.5 OVER-subtracts:
-    # the merged model flips to "always non-entailment" on HANS (H-ent→0, H-nent→100,
-    # MNLI 85→72). `full_b0.2` is the recommended single re-run: identical to `full`
-    # but with a gentler beta=0.2 so the subtraction nudges instead of flipping.
-    # Sanity targets: H-ent should stay ~90%+, MNLI ~85%, and H-nent should land
-    # above the P-only ~11% (a real gain, not the degenerate 100%).
+    # --- beta calibration under plain Phase-3 FT (the recommended two re-runs) -----
+    # With reweighting off, Phase-3 is the original plain MNLI fine-tuning, so these two
+    # rows isolate the subtraction itself (dose-response in beta) under the new protocol.
+    # Read together with metrics["phase2_5"]["post_merge_pre_ft"]: the snapshot shows the
+    # merge's immediate effect, the final phase3 numbers show what survives FT.
+    # Sanity targets: H-ent ~90%+, MNLI ~85%, H-nent above the no_subtraction lower bound
+    # (a real gain, not the degenerate all-non-entailment 100%).
     "full_b0.2":       {"merge_mode": "full", "enable_layerwise_analysis": True, "beta": 0.2},
-    # Recommended single re-run: treat BOTH failure mechanisms at once — gentler beta
-    # so the subtraction does not flip the model, AND softer Phase-3 reweighting
-    # (gamma 2.0 -> 1.0) so Phase-3 can restore legitimate high-overlap entailment
-    # (which gamma=2.0 down-weighted to ~0, locking H-ent at 0 and MNLI at 72).
+    # Optional third run, only after the two plain-FT runs: reweighting ON with the
+    # per-gold-class normalized weights (prior-drift fixed in trainer.py). Tests whether
+    # N-guided reweighting adds anything on top of plain FT once N is functional.
+    # Reweight must be explicit here now that the config default is False.
     "full_best":       {"merge_mode": "full", "enable_layerwise_analysis": True,
-                        "beta": 0.2, "phase3_reweight_gamma": 1.0},
+                        "beta": 0.2, "phase3_debias_reweight": True,
+                        "phase3_reweight_gamma": 1.0},
 
-    # --- lower bound ---
+    # --- lower bound (plain P-only: reweight now off by default) ---
     "no_subtraction":  {"no_ties_ablation": True},
-    # --- rescue study: P-only + N-reweighting at different gamma (subtraction dropped,
-    #     since it is a net-negative component across all seeds). no_subtraction == gamma 2.0. ---
+    # --- rescue study: P-only + N-reweighting at different gamma (reweight explicitly ON;
+    #     pre-protocol-change results for these used the old global normalization). ---
     "nosub_g1":        {"no_ties_ablation": True, "phase3_debias_reweight": True, "phase3_reweight_gamma": 1.0},
     "nosub_g3":        {"no_ties_ablation": True, "phase3_debias_reweight": True, "phase3_reweight_gamma": 3.0},
     "nosub_g4":        {"no_ties_ablation": True, "phase3_debias_reweight": True, "phase3_reweight_gamma": 4.0},

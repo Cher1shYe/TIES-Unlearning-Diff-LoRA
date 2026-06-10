@@ -23,6 +23,7 @@ from configs.config import TrainConfig, LoRAConfig
 from data.dataloader import (
     set_seed, make_mnli_loaders, make_hans_loader,
     make_phase2_biased_mixed_loader, make_phase2_overlap_biased_loader,
+    make_overlap_diagnostic_loader,
     make_phase2_5_analysis_loaders,
     make_esnli_test_loader, make_anli_test_loader, make_snli_hard_test_loader,
     make_wanli_test_loader,
@@ -34,7 +35,10 @@ from models.surgery import (
 from models.ties_lora import set_model_forward_mode
 from models.analyzer import analyze_shortcut_layers
 from utils.optim_utils import _split_params, _make_scaler, _amp_enabled, _log_lora_norms, _save_checkpoint, _load_checkpoint
-from training.evaluate import eval_mnli, eval_hans, eval_esnli, eval_anli, eval_snli_hard, eval_wanli, eval_pred_distribution
+from training.evaluate import (
+    eval_mnli, eval_hans, eval_esnli, eval_anli, eval_snli_hard, eval_wanli,
+    eval_pred_distribution, eval_overlap_shortcut,
+)
 
 
 def train_ties_unlearn(cfg: TrainConfig, resume_from_checkpoint_path: Optional[str] = None):
@@ -250,27 +254,51 @@ def train_ties_unlearn(cfg: TrainConfig, resume_from_checkpoint_path: Optional[s
               f"ent={p2_hans['hans_entailment']:.4f} "
               f"non-ent={p2_hans['hans_non_entailment']:.4f}")
 
-        # --- N-branch sanity check (model is still in "phase2" mode = base + ΔN) ---
-        # Confirms the N branch learned the shortcut FEATURE instead of collapsing
-        # to a constant 'always-entailment' predictor (the old failure mode).
-        p2_ndist = eval_pred_distribution(model, hans_loader, device)
-        print(f"  [N-branch check] HANS pred dist: "
+        # --- N-branch sanity checks (model is still in "phase2" mode = base + ΔN) ---
+        # (1) Collapse check on MNLI val. NOT on HANS: every HANS example is
+        #     high-overlap by construction, so a HEALTHY overlap-shortcut N also
+        #     predicts ~100% entailment there — the old HANS-based check could not
+        #     tell shortcut learning apart from collapse. Only on MNLI does a
+        #     one-class histogram really mean a constant predictor.
+        p2_ndist = eval_pred_distribution(model, val_loader, device)
+        # (2) Shortcut-alignment check on MNLI-derived high/low-overlap groups
+        #     (HANS-free): N learned the overlap feature iff it predicts
+        #     entailment on high-overlap but not on low-overlap examples.
+        overlap_diag_loader = make_overlap_diagnostic_loader(cfg, tok)
+        p2_shortcut = eval_overlap_shortcut(model, overlap_diag_loader, device)
+        # HANS pred dist kept for reference only (expected ~all-entailment for a
+        # shortcut-aligned N; not used for the collapse verdict).
+        p2_hans_ndist = eval_pred_distribution(model, hans_loader, device)
+        print(f"  [N-branch check] MNLI pred dist: "
               f"ent={p2_ndist['pred_entailment']:.2%} "
               f"neu={p2_ndist['pred_neutral']:.2%} "
-              f"con={p2_ndist['pred_contradiction']:.2%} "
-              f"| on true-non-ent it still predicts entail: "
-              f"neu={p2_ndist['true_neutral_pred_entail_rate']}")
+              f"con={p2_ndist['pred_contradiction']:.2%}")
+        print(f"  [N-branch check] overlap alignment: "
+              f"high-ov ent-rate={p2_shortcut['high_ov_pred_entail_rate']:.2%} "
+              f"low-ov ent-rate={p2_shortcut['low_ov_pred_entail_rate']:.2%} "
+              f"gap={p2_shortcut['ent_rate_gap']:.2%} | "
+              f"high-ov gold-non-ent predicted entail: "
+              f"{p2_shortcut['high_ov_nonent_pred_entail_rate']:.2%}")
         if p2_ndist["collapsed"]:
             print(f"  [N-branch check] ⚠️  COLLAPSED: {p2_ndist['max_class_frac']:.1%} "
-                  f"of predictions are one class — N did NOT learn the shortcut feature. "
+                  f"of MNLI predictions are one class — N is a constant predictor. "
                   f"Lower neg_lr_mult or check phase2_shortcut_source.")
+        elif not p2_shortcut["learned_shortcut"]:
+            print(f"  [N-branch check] ⚠️  predictions spread but NOT overlap-aligned "
+                  f"(gap {p2_shortcut['ent_rate_gap']:.1%} < 30%) — N may have learned "
+                  f"task signal instead of the shortcut. Sharpen overlap thresholds "
+                  f"or raise phase2_epochs.")
         else:
-            print(f"  [N-branch check] ✅ predictions spread across classes "
-                  f"(max {p2_ndist['max_class_frac']:.1%}) — N learned a feature, not a constant.")
+            print(f"  [N-branch check] ✅ N keys on the overlap feature "
+                  f"(gap {p2_shortcut['ent_rate_gap']:.1%}), not a constant.")
 
-        _log_lora_norms(model)
+        norm_summary = _log_lora_norms(model)
         metrics["phase2"] = {"mnli": p2_mnli, "hans": p2_hans, "esnli": p2_esnli,
-                             "n_branch_pred_dist": p2_ndist}
+                             "lora_norm_summary": norm_summary,
+                             "n_branch_pred_dist": p2_ndist,
+                             "n_branch_shortcut": p2_shortcut,
+                             "n_branch_hans_pred_dist": p2_hans_ndist,
+                             "overlap_group_size": getattr(phase2_train_loader, "overlap_group_size", None)}
 
         if cfg.save_checkpoints_per_phase:
             phase2_metrics_to_save = {"mnli": p2_mnli, "hans": p2_hans, "esnli": p2_esnli}
@@ -345,6 +373,16 @@ def train_ties_unlearn(cfg: TrainConfig, resume_from_checkpoint_path: Optional[s
         print("=" * 60)
         set_model_forward_mode(model, "eval")
 
+        # Merged-model snapshot BEFORE any Phase-3 fine-tuning: separates what the
+        # subtraction itself does to the model from what the debias FT does to it
+        # (the HANS ent→0 flip can come from either; this disambiguates).
+        pm_mnli = eval_mnli(model, val_loader, device)
+        pm_hans = eval_hans(model, hans_loader, device)
+        metrics["phase2_5"]["post_merge_pre_ft"] = {"mnli": pm_mnli, "hans": pm_hans}
+        print(f"[Phase3] post-merge (pre-FT): MNLI={pm_mnli['mnli_accuracy']:.4f} "
+              f"HANS ent={pm_hans['hans_entailment']:.4f} "
+              f"non-ent={pm_hans['hans_non_entailment']:.4f}")
+
         # Freeze N, unfreeze P and head.
         for n, p in model.named_parameters():
             if "lora_P_" in n:
@@ -399,13 +437,26 @@ def train_ties_unlearn(cfg: TrainConfig, resume_from_checkpoint_path: Optional[s
                         inputs = {k: v for k, v in batch.items() if k != "labels"}
                         labels = batch["labels"]
                         with torch.no_grad():
+                            model.eval()                              # dropout off: stable N scores
                             set_model_forward_mode(model, "phase2")   # base + ΔN only
                             n_logits = model(**inputs).logits
                             set_model_forward_mode(model, "eval")      # back to merged
+                            model.train()
                             p_n = torch.softmax(n_logits.float(), dim=-1).gather(
                                 1, labels.view(-1, 1)).squeeze(1)
-                            w = (1.0 - p_n).clamp_min(0.0).pow(cfg.phase3_reweight_gamma)
-                            w = w * (w.numel() / w.sum().clamp_min(1e-6))  # mean-1 normalize
+                            # Floor keeps shortcut-solvable examples visible instead of
+                            # effectively deleting them from training.
+                            w = (1.0 - p_n).clamp_min(0.05).pow(cfg.phase3_reweight_gamma)
+                            # PER-CLASS mean-1 normalization. N solves far more entailment
+                            # than non-entailment examples, so a global normalization
+                            # shifts the effective label prior toward non-entailment and
+                            # the model flips to 'never entailment' on HANS (ent→5%,
+                            # non-ent→98%). Normalizing within each gold class keeps the
+                            # label prior intact while still emphasizing, inside each
+                            # class, the examples the shortcut cannot solve.
+                            for c in labels.unique():
+                                m = labels == c
+                                w[m] = w[m] * (m.sum() / w[m].sum().clamp_min(1e-6))
                         logits = model(**inputs).logits
                         per = torch.nn.functional.cross_entropy(logits, labels, reduction="none")
                         loss = (per * w).mean()

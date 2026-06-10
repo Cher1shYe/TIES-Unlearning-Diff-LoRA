@@ -43,11 +43,19 @@ def _amp_enabled(fp16: bool, device):
     return fp16 and device.type == "cuda"
 
 def _log_lora_norms(model):
-    """Print weight norms for all TIES-Unlearn layers (debug)."""
+    """Print weight norms for all TIES-Unlearn layers (debug).
+    Returns a mean-norm summary so callers can persist it in metrics."""
+    dp, dn = [], []
     for name, module in model.named_modules():
         if isinstance(module, TIESUnlearnLoRALinear):
             norms = module.weight_norms()
+            dp.append(norms["dP_norm"])
+            dn.append(norms["dN_norm"])
             print(f"  {name}: dP={norms['dP_norm']:.4f}  dN={norms['dN_norm']:.4f}")
+    return {
+        "dP_norm_mean": sum(dp) / max(len(dp), 1),
+        "dN_norm_mean": sum(dn) / max(len(dn), 1),
+    }
 
 def _save_checkpoint(
     model: nn.Module,

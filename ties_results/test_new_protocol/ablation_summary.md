@@ -2,4 +2,4 @@
 
 | Ablation | MNLI | e-SNLI | ANLI | SNLI-hard | WANLI | HANS overall | HANS entailment | HANS non-entailment |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| full | 72.06% | 68.46% | 35.47% | 61.27% | 51.74% | 50.15% | 0.29% | 100.00% |
+| full_best | 78.64% | 75.14% | 32.75% | 67.22% | 55.34% | 51.77% | 5.22% | 98.33% |

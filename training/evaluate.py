@@ -113,6 +113,45 @@ def eval_pred_distribution(model, loader, device) -> Dict:
 
 
 @torch.no_grad()
+def eval_overlap_shortcut(model, loader, device) -> Dict:
+    """Shortcut-alignment check for the N branch, on MNLI-derived data (HANS-free).
+
+    Expects a loader from make_overlap_diagnostic_loader (high / low lexical-overlap
+    groups with gold labels). An N branch that keys on the overlap feature predicts
+    entailment far more often on the high-overlap group than on the low-overlap
+    group (large `ent_rate_gap`), and keeps predicting entailment on high-overlap
+    examples whose gold label is non-entailment
+    (`high_ov_nonent_pred_entail_rate`) — the heuristic-breaking signature that
+    neither a constant predictor nor a task-only predictor shows.
+    """
+    model.eval()
+    stats = {0: [0, 0], 1: [0, 0]}   # ov_group -> [pred_entailment, total]
+    hi_nonent = [0, 0]               # gold non-entailment within the high group
+    for batch in loader:
+        ids = batch["input_ids"].to(device)
+        mask = batch["attention_mask"].to(device)
+        labels = batch["label"]
+        groups = batch["ov_group"]
+        preds = model(input_ids=ids, attention_mask=mask).logits.argmax(-1).cpu()
+        for g in (0, 1):
+            gm = groups == g
+            stats[g][0] += (preds[gm] == 0).sum().item()
+            stats[g][1] += int(gm.sum().item())
+        hm = (groups == 1) & (labels != 0)
+        hi_nonent[0] += (preds[hm] == 0).sum().item()
+        hi_nonent[1] += int(hm.sum().item())
+    low_rate = stats[0][0] / max(stats[0][1], 1)
+    high_rate = stats[1][0] / max(stats[1][1], 1)
+    return {
+        "low_ov_pred_entail_rate": low_rate,
+        "high_ov_pred_entail_rate": high_rate,
+        "ent_rate_gap": high_rate - low_rate,
+        "high_ov_nonent_pred_entail_rate": hi_nonent[0] / max(hi_nonent[1], 1),
+        "learned_shortcut": bool((high_rate - low_rate) >= 0.30),
+    }
+
+
+@torch.no_grad()
 def _eval_pair_accuracy(model, loader, device, key: str) -> Dict[str, float]:
     """3-class premise+hypothesis accuracy. Shared by e-SNLI / ANLI / SNLI-hard."""
     model.eval()
