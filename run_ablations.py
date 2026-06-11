@@ -63,6 +63,13 @@ ABLATIONS: Dict[str, Dict[str, Any]] = {
                         "phase3_freeze_subtracted_p": True, "phase3_debias_reweight": False},
     # --- layer-localization family (full mask, phase-3 on) ---
     "global":          {"merge_mode": "full", "enable_layerwise_analysis": False},
+    # Probe-validated regime (probe_seed42, 2026-06-11): masks + ALL layers + beta=1
+    # gives pre-FT dH-non +11.7 at dMNLI -0.74 vs the p_only control, while the paper
+    # default (selected/b0.5) is inert and naive at the same dose is destructive.
+    # Decisive open question: does the gain survive Phase-3 FT? Test via paired
+    # multiseed vs no_subtraction.
+    "full_global_b1":  {"merge_mode": "full", "enable_layerwise_analysis": False,
+                        "beta": 1.0},
     "random":          {"merge_mode": "full", "random_layer_selection": True},
     "kl_only":         {"merge_mode": "full", "enable_layerwise_analysis": True, "knn_mode": "off"},
     "knn_only":        {"merge_mode": "full", "enable_layerwise_analysis": True,
