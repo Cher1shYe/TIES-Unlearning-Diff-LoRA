@@ -1,0 +1,80 @@
+[
+  {
+    "tag": "no_subtraction",
+    "seed": 42,
+    "method": "no_subtraction",
+    "mnli_accuracy": 0.8542,
+    "esnli_accuracy": 0.8091408794788274,
+    "anli_accuracy": 0.288125,
+    "snli_hard_accuracy": 0.7344372891750997,
+    "wanli_accuracy": 0.5832,
+    "hans_overall": 0.6238666666666667,
+    "hans_entailment": 0.9639333333333333,
+    "hans_non_entailment": 0.2838
+  },
+  {
+    "tag": "full",
+    "seed": 42,
+    "method": "full",
+    "mnli_accuracy": 0.854,
+    "esnli_accuracy": 0.8083265472312704,
+    "anli_accuracy": 0.288125,
+    "snli_hard_accuracy": 0.7347439435755904,
+    "wanli_accuracy": 0.5842,
+    "hans_overall": 0.6237333333333334,
+    "hans_entailment": 0.9572,
+    "hans_non_entailment": 0.2902666666666667
+  },
+  {
+    "tag": "jtt",
+    "seed": 42,
+    "method": "JTT",
+    "mnli_accuracy": 0.8188,
+    "esnli_accuracy": 0.7908184039087948,
+    "anli_accuracy": 0.309375,
+    "snli_hard_accuracy": 0.702851885924563,
+    "wanli_accuracy": 0.58,
+    "hans_overall": 0.6233333333333333,
+    "hans_entailment": 0.9008666666666667,
+    "hans_non_entailment": 0.3458
+  },
+  {
+    "tag": "standard_lora",
+    "seed": 42,
+    "method": "Standard LoRA",
+    "mnli_accuracy": 0.85,
+    "esnli_accuracy": 0.8153501628664495,
+    "anli_accuracy": 0.2875,
+    "snli_hard_accuracy": 0.7353572523765716,
+    "wanli_accuracy": 0.581,
+    "hans_overall": 0.5937666666666667,
+    "hans_entailment": 0.9854,
+    "hans_non_entailment": 0.20213333333333333
+  },
+  {
+    "tag": "no_subtraction",
+    "seed": 123,
+    "method": "no_subtraction",
+    "mnli_accuracy": 0.8576,
+    "esnli_accuracy": 0.8079193811074918,
+    "anli_accuracy": 0.2765625,
+    "snli_hard_accuracy": 0.7191045691505673,
+    "wanli_accuracy": 0.5836,
+    "hans_overall": 0.5985666666666667,
+    "hans_entailment": 0.9773333333333334,
+    "hans_non_entailment": 0.2198
+  },
+  {
+    "tag": "full",
+    "seed": 123,
+    "method": "full",
+    "mnli_accuracy": 0.8572,
+    "esnli_accuracy": 0.8061889250814332,
+    "anli_accuracy": 0.2778125,
+    "snli_hard_accuracy": 0.7172646427476235,
+    "wanli_accuracy": 0.5792,
+    "hans_overall": 0.5985333333333334,
+    "hans_entailment": 0.9782666666666666,
+    "hans_non_entailment": 0.2188
+  }
+]

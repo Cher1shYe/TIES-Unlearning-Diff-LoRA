@@ -1,0 +1,244 @@
+{
+  "method": "layerwise knn Diff-LoRA with biased N",
+  "config": {
+    "run_jtt": false,
+    "jtt_phase1_epochs": 3,
+    "jtt_upweight_factor": 4,
+    "model_name": "roberta-base",
+    "num_labels": 3,
+    "max_seq_length": 128,
+    "mnli_train_size": 100000,
+    "mnli_val_size": 5000,
+    "hans_clean_split": true,
+    "batch_size": 32,
+    "learning_rate": 0.001,
+    "weight_decay": 0.01,
+    "warmup_ratio": 0.06,
+    "max_grad_norm": 1.5,
+    "fp16": false,
+    "seed": 123,
+    "target_modules": [
+      "query",
+      "value"
+    ],
+    "pos_rank": 16,
+    "neg_rank": 4,
+    "alpha": 1.25,
+    "beta": 0.5,
+    "lora_alpha": 16,
+    "lora_dropout": 0.1,
+    "trim_ratio": 0.2,
+    "enable_layerwise_analysis": true,
+    "kl_batches": 8,
+    "kl_topk_candidates": 8,
+    "layer_selection_topk": 4,
+    "knn_mode": "pd_and_early_wrong",
+    "knn_k": 10,
+    "knn_stability_window": 2,
+    "knn_batch_size": 64,
+    "knn_ref_mnli": 2000,
+    "knn_ref_hans_entail": 1000,
+    "knn_ref_hans_non_entail": 1000,
+    "knn_query_mnli": 500,
+    "knn_query_hans_entail": 750,
+    "knn_query_hans_non_entail": 750,
+    "kl_weight": 0.5,
+    "knn_weight": 0.5,
+    "pd_weight": 0.25,
+    "early_wrong_weight": 0.25,
+    "no_ties_ablation": true,
+    "merge_mode": "full",
+    "random_layer_selection": false,
+    "phase3_freeze_subtracted_p": false,
+    "phase3_debias_reweight": false,
+    "phase3_reweight_gamma": 2.0,
+    "bias_model_epochs": 3,
+    "zfilter_drop_ratio": 0.2,
+    "poe_bias_scale": 1.0,
+    "phase1_epochs": 3,
+    "phase2_epochs": 2,
+    "phase3_epochs": 5,
+    "phase2_mnli_mix_ratio": 0.1,
+    "phase2_epoch_batches": 3125,
+    "phase2_shortcut_source": "mnli_overlap",
+    "overlap_high_thresh": 0.9,
+    "overlap_low_thresh": 0.5,
+    "neg_lr_mult": 0.5,
+    "neg_lr_mult_p3": 0.3,
+    "neg_reg_lambda": 0.001,
+    "run_baseline": false,
+    "output_dir": "/content/drive/MyDrive/ties_results/new_multiseed/seed_123",
+    "save_checkpoints": false,
+    "experiment_name": "ablation_no_subtraction",
+    "save_checkpoints_per_phase": false,
+    "checkpoint_dir": null
+  },
+  "history": {
+    "train_loss": [
+      0.5942260480594636,
+      0.45074415140628815,
+      0.38548405375003814,
+      0.32647915591148974,
+      0.19779729646321903,
+      0.3541192612326145,
+      0.3364968906521797,
+      0.32630759613990784,
+      0.31627626971125605,
+      0.3074608259510994
+    ],
+    "val_acc": [
+      0.8262,
+      0.8436,
+      0.8596,
+      0.7098,
+      0.7124,
+      0.8574,
+      0.8562,
+      0.8526,
+      0.8574,
+      0.8576
+    ],
+    "phase": [
+      1,
+      1,
+      1,
+      2,
+      2,
+      3,
+      3,
+      3,
+      3,
+      3
+    ]
+  },
+  "phase1": {
+    "mnli": {
+      "mnli_accuracy": 0.8596
+    },
+    "hans": {
+      "hans_overall": 0.5646,
+      "hans_entailment": 0.9865333333333334,
+      "hans_non_entailment": 0.14266666666666666,
+      "heuristic_breakdown": {
+        "lexical_overlap": 0.5186,
+        "subsequence": 0.5392,
+        "constituent": 0.636
+      }
+    },
+    "esnli": {
+      "esnli_accuracy": 0.8048656351791531
+    }
+  },
+  "phase2": {
+    "mnli": {
+      "mnli_accuracy": 0.7124
+    },
+    "hans": {
+      "hans_overall": 0.5,
+      "hans_entailment": 1.0,
+      "hans_non_entailment": 0.0,
+      "heuristic_breakdown": {
+        "lexical_overlap": 0.5,
+        "subsequence": 0.5,
+        "constituent": 0.5
+      }
+    },
+    "esnli": {
+      "esnli_accuracy": 0.7141693811074918
+    },
+    "lora_norm_summary": {
+      "dP_norm_mean": 13.279982308546701,
+      "dN_norm_mean": 3.661913270751635
+    },
+    "n_branch_pred_dist": {
+      "n": 5000,
+      "pred_entailment": 0.23720000684261322,
+      "pred_neutral": 0.42399999499320984,
+      "pred_contradiction": 0.33880001306533813,
+      "max_class_frac": 0.42399999499320984,
+      "collapsed": false,
+      "true_entailment_pred_entail_rate": 0.5456071628427532,
+      "true_neutral_pred_entail_rate": 0.04536616979909268,
+      "true_contradiction_pred_entail_rate": 0.0844311377245509
+    },
+    "n_branch_shortcut": {
+      "low_ov_pred_entail_rate": 0.026,
+      "high_ov_pred_entail_rate": 0.857,
+      "ent_rate_gap": 0.831,
+      "high_ov_nonent_pred_entail_rate": 0.5364963503649635,
+      "learned_shortcut": true
+    },
+    "n_branch_hans_pred_dist": {
+      "n": 30000,
+      "pred_entailment": 1.0,
+      "pred_neutral": 0.0,
+      "pred_contradiction": 0.0,
+      "max_class_frac": 1.0,
+      "collapsed": true,
+      "true_entailment_pred_entail_rate": 1.0,
+      "true_neutral_pred_entail_rate": 1.0,
+      "true_contradiction_pred_entail_rate": null
+    },
+    "overlap_group_size": 16953
+  },
+  "phase2_5": {
+    "mode": "no_ties",
+    "shortcut_layers": [],
+    "all_layer_tags": [
+      "encoder.layer.0",
+      "encoder.layer.1",
+      "encoder.layer.2",
+      "encoder.layer.3",
+      "encoder.layer.4",
+      "encoder.layer.5",
+      "encoder.layer.6",
+      "encoder.layer.7",
+      "encoder.layer.8",
+      "encoder.layer.9",
+      "encoder.layer.10",
+      "encoder.layer.11"
+    ],
+    "post_merge_pre_ft": {
+      "mnli": {
+        "mnli_accuracy": 0.8492
+      },
+      "hans": {
+        "hans_overall": 0.5712333333333334,
+        "hans_entailment": 0.9786,
+        "hans_non_entailment": 0.16386666666666666,
+        "heuristic_breakdown": {
+          "lexical_overlap": 0.5261,
+          "subsequence": 0.5514,
+          "constituent": 0.6362
+        }
+      }
+    }
+  },
+  "phase3": {
+    "mnli": {
+      "mnli_accuracy": 0.8576
+    },
+    "hans": {
+      "hans_overall": 0.5985666666666667,
+      "hans_entailment": 0.9773333333333334,
+      "hans_non_entailment": 0.2198,
+      "heuristic_breakdown": {
+        "lexical_overlap": 0.5546,
+        "subsequence": 0.5602,
+        "constituent": 0.6809
+      }
+    },
+    "esnli": {
+      "esnli_accuracy": 0.8079193811074918
+    },
+    "anli": {
+      "anli_accuracy": 0.2765625
+    },
+    "snli_hard": {
+      "snli_hard_accuracy": 0.7191045691505673
+    },
+    "wanli": {
+      "wanli_accuracy": 0.5836
+    }
+  }
+}

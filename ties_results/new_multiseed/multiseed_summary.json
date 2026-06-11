@@ -1,0 +1,100 @@
+[
+  {
+    "tag": "no_subtraction",
+    "method": "no_subtraction",
+    "n_seeds": 2,
+    "seeds": [
+      42,
+      123
+    ],
+    "mnli_accuracy_mean": 0.8559,
+    "mnli_accuracy_std": 0.002404163056034311,
+    "esnli_accuracy_mean": 0.8085301302931596,
+    "esnli_accuracy_std": 0.0008637297815796987,
+    "anli_accuracy_mean": 0.28234375,
+    "anli_accuracy_std": 0.008175922157469477,
+    "snli_hard_accuracy_mean": 0.7267709291628335,
+    "snli_hard_accuracy_std": 0.010841870303381587,
+    "wanli_accuracy_mean": 0.5834,
+    "wanli_accuracy_std": 0.00028284271247458785,
+    "hans_overall_mean": 0.6112166666666667,
+    "hans_overall_std": 0.017889801564019644,
+    "hans_entailment_mean": 0.9706333333333333,
+    "hans_entailment_std": 0.009475230867899793,
+    "hans_non_entailment_mean": 0.2518,
+    "hans_non_entailment_std": 0.04525483399593905
+  },
+  {
+    "tag": "full",
+    "method": "full",
+    "n_seeds": 2,
+    "seeds": [
+      42,
+      123
+    ],
+    "mnli_accuracy_mean": 0.8555999999999999,
+    "mnli_accuracy_std": 0.0022627416997969383,
+    "esnli_accuracy_mean": 0.8072577361563518,
+    "esnli_accuracy_std": 0.0015115271177644138,
+    "anli_accuracy_mean": 0.28296875,
+    "anli_accuracy_std": 0.007292038680986273,
+    "snli_hard_accuracy_mean": 0.7260042931616069,
+    "snli_hard_accuracy_std": 0.012359732145855024,
+    "wanli_accuracy_mean": 0.5817000000000001,
+    "wanli_accuracy_std": 0.0035355339059327407,
+    "hans_overall_mean": 0.6111333333333333,
+    "hans_overall_std": 0.017819090885900998,
+    "hans_entailment_mean": 0.9677333333333333,
+    "hans_entailment_std": 0.01489638285699653,
+    "hans_non_entailment_mean": 0.25453333333333333,
+    "hans_non_entailment_std": 0.05053456462879861
+  },
+  {
+    "tag": "jtt",
+    "method": "JTT",
+    "n_seeds": 1,
+    "seeds": [
+      42
+    ],
+    "mnli_accuracy_mean": 0.8188,
+    "mnli_accuracy_std": 0.0,
+    "esnli_accuracy_mean": 0.7908184039087948,
+    "esnli_accuracy_std": 0.0,
+    "anli_accuracy_mean": 0.309375,
+    "anli_accuracy_std": 0.0,
+    "snli_hard_accuracy_mean": 0.702851885924563,
+    "snli_hard_accuracy_std": 0.0,
+    "wanli_accuracy_mean": 0.58,
+    "wanli_accuracy_std": 0.0,
+    "hans_overall_mean": 0.6233333333333333,
+    "hans_overall_std": 0.0,
+    "hans_entailment_mean": 0.9008666666666667,
+    "hans_entailment_std": 0.0,
+    "hans_non_entailment_mean": 0.3458,
+    "hans_non_entailment_std": 0.0
+  },
+  {
+    "tag": "standard_lora",
+    "method": "Standard LoRA",
+    "n_seeds": 1,
+    "seeds": [
+      42
+    ],
+    "mnli_accuracy_mean": 0.85,
+    "mnli_accuracy_std": 0.0,
+    "esnli_accuracy_mean": 0.8153501628664495,
+    "esnli_accuracy_std": 0.0,
+    "anli_accuracy_mean": 0.2875,
+    "anli_accuracy_std": 0.0,
+    "snli_hard_accuracy_mean": 0.7353572523765716,
+    "snli_hard_accuracy_std": 0.0,
+    "wanli_accuracy_mean": 0.581,
+    "wanli_accuracy_std": 0.0,
+    "hans_overall_mean": 0.5937666666666667,
+    "hans_overall_std": 0.0,
+    "hans_entailment_mean": 0.9854,
+    "hans_entailment_std": 0.0,
+    "hans_non_entailment_mean": 0.20213333333333333,
+    "hans_non_entailment_std": 0.0
+  }
+]

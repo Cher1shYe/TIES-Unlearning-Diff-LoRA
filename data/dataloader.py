@@ -1,3 +1,4 @@
+import os
 import random
 import re
 import numpy as np
@@ -11,12 +12,26 @@ from datasets import Dataset, Value, concatenate_datasets, load_dataset
 
 from configs.config import TrainConfig
 
-def set_seed(seed: int):
+def set_seed(seed: int, deterministic: bool = True):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+    if deterministic:
+        # Same-code same-seed runs differed by up to 10pt on HANS non-entailment
+        # across GPU types (A100 vs L4): TF32 tensor-core matmuls plus
+        # nondeterministic cudnn algorithm selection move the near-threshold HANS
+        # decision boundary, and template-generated HANS examples then flip in
+        # clusters. Paired method-vs-control comparisons are meaningless unless
+        # these are pinned. Still run all paired arms on the SAME GPU type:
+        # kernels differ across architectures even with everything below pinned.
+        os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.allow_tf32 = False
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        torch.use_deterministic_algorithms(True, warn_only=True)
 
 def _tokenize_pair(tok, batch, max_len: int):
     return tok(
