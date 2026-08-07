@@ -451,7 +451,7 @@ def _repeat_full_sr(root: Path) -> tuple[Mapping[str, Any], Mapping[str, Any], M
     return provenance, hans, mnli, commands
 
 
-def _validate_a100_root_identity(root: Path, *, mode: str, conditions: Sequence[str]) -> None:
+def _validate_a100_root_identity(root: Path, *, mode: str, conditions: Sequence[str], canonical_dir: Path | None = None) -> None:
     commands = _read_json(root / "commands.json")
     if commands.get("mode") != mode:
         raise ValueError(f"A100 smoke mode must be {mode}")
@@ -464,16 +464,16 @@ def _validate_a100_root_identity(root: Path, *, mode: str, conditions: Sequence[
     gpu = commands.get("gpu_name")
     if not isinstance(gpu, str) or "A100" not in gpu or environment.get("gpu") != gpu:
         raise ValueError("A100 gpu evidence is missing or inconsistent")
-    canonical_dir = Path("ties_results/canonical_v1")
+    canonical_dir = Path("ties_results/canonical_v1") if canonical_dir is None else Path(canonical_dir)
     validate_smoke_root(root, expected_conditions=conditions, canonical_dir=canonical_dir)
 
 
-def compare_a100_repeat(primary_root: Path, repeat_root: Path, tolerance: float = 0.005) -> dict[str, Any]:
+def compare_a100_repeat(primary_root: Path, repeat_root: Path, tolerance: float = 0.005, *, canonical_dir: Path | None = None) -> dict[str, Any]:
     """Compare fresh A100 full_sr smoke runs without using MNLI as the gate."""
     primary_root = Path(primary_root).resolve()
     repeat_root = Path(repeat_root).resolve()
-    _validate_a100_root_identity(primary_root, mode="primary", conditions=("standard_lora", "full_sr", "class_prior_reweight"))
-    _validate_a100_root_identity(repeat_root, mode="repeat_full_sr", conditions=("full_sr",))
+    _validate_a100_root_identity(primary_root, mode="primary", conditions=("standard_lora", "full_sr", "class_prior_reweight"), canonical_dir=canonical_dir)
+    _validate_a100_root_identity(repeat_root, mode="repeat_full_sr", conditions=("full_sr",), canonical_dir=canonical_dir)
     primary_provenance, primary_hans, primary_mnli, _ = _repeat_full_sr(primary_root)
     repeat_provenance, repeat_hans, repeat_mnli, _ = _repeat_full_sr(repeat_root)
     for field, primary_value in primary_provenance.items():

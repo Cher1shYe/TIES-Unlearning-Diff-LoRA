@@ -12,7 +12,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--smoke-root", type=Path)
     parser.add_argument("--source-archive", type=Path)
     parser.add_argument("--commands", type=Path)
-    parser.add_argument("--repo-root", type=Path, default=Path("."))
+    parser.add_argument("--repo-root", type=Path)
+    parser.add_argument("--repeat-root", type=Path)
+    parser.add_argument("--repeat-commands", type=Path)
     parser.add_argument("--fresh", action="store_true")
     return parser
 
@@ -22,17 +24,18 @@ def main(argv: list[str] | None = None) -> int:
     from canonical.freeze import build_freeze_bundle, verify_freeze_bundle
 
     if args.verify_only:
-        if args.fresh or any(value is not None for value in (args.protocol, args.smoke_root, args.source_archive, args.commands)):
+        if args.fresh or any(value is not None for value in (args.protocol, args.smoke_root, args.source_archive, args.commands, args.repo_root, args.repeat_root, args.repeat_commands)):
             raise SystemExit("--verify-only accepts only --output-dir")
         report = verify_freeze_bundle(args.output_dir)
     else:
-        missing = [name for name, value in (("--protocol", args.protocol), ("--smoke-root", args.smoke_root), ("--source-archive", args.source_archive), ("--commands", args.commands)) if value is None]
+        missing = [name for name, value in (("--protocol", args.protocol), ("--smoke-root", args.smoke_root), ("--source-archive", args.source_archive), ("--commands", args.commands), ("--repo-root", args.repo_root), ("--repeat-root", args.repeat_root), ("--repeat-commands", args.repeat_commands)) if value is None]
         if missing:
             raise SystemExit(f"missing required creation arguments: {', '.join(missing)}")
         if not args.fresh:
             raise SystemExit("freeze creation requires --fresh")
         report = build_freeze_bundle(args.protocol, args.smoke_root, args.output_dir, args.repo_root,
-                                     source_archive_path=args.source_archive, commands_path=args.commands)
+                                     source_archive_path=args.source_archive, commands_path=args.commands,
+                                     repeat_root=args.repeat_root, repeat_commands_path=args.repeat_commands)
     print(report["state"])
     return 0
 

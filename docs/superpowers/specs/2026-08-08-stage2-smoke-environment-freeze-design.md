@@ -178,7 +178,7 @@ Create a repository-local isolated environment rather than modifying the MSYS2 P
 
 ### 4.2 Canonical A100 freeze
 
-The A100 runtime is the canonical training environment. The freeze bundle records:
+The A100 runtime is the canonical training environment. The freeze bundle records both the primary and fresh-repeat immutable command records, and their commit chain must equal the clean source-package `HEAD`. The freeze bundle records:
 
 - exact Python and package versions;
 - PyTorch CUDA runtime and NVIDIA driver;

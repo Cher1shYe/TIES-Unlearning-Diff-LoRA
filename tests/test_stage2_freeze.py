@@ -13,7 +13,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from canonical.artifacts import sha256_file, write_json
-from canonical.freeze import build_freeze_bundle, verify_freeze_bundle
+from canonical.freeze import build_evidence_archive, build_freeze_bundle, verify_freeze_bundle
 from canonical.source_package import build_source_package, verify_source_package
 
 
@@ -23,13 +23,19 @@ class CanonicalManifestBackend:
 
     def initialize_manifests(self, output_dir, _protocol_path):
         manifests = Path(output_dir) / "manifests"
+        def entry(name, count):
+            values = [f"{name}-{index}" for index in range(count)]
+            digest = "a" * 64
+            return {"full_count": count, "selected_count": count, "full_ids": values, "selected_ids": values, "full_ids_sha256": digest, "selected_ids_sha256": digest}
         write_json(
             manifests / "data_manifest.json",
             {
                 "schema_version": "canonical_data_manifest_v2",
                 "scope": "canonical_v1",
                 "data_seed": 42,
-                "mnli": {"train": {"selected_count": self.config.mnli_train_size}},
+                "mnli": {"train": entry("mnli-train", 100000), "validation_matched": entry("mnli-validation", 5000)},
+                "hans": {name: entry(f"hans-{name}", 1) for name in ("build", "dev", "evaluation")},
+                "ood": {name: entry(f"ood-{name}", 1) for name in ("esnli", "anli", "snli_hard", "wanli")},
             },
         )
 
@@ -65,13 +71,21 @@ class Stage2FreezeTest(unittest.TestCase):
                 "schema_version": "canonical_environment_manifest_v1",
                 "gpu": "NVIDIA A100-SXM4-40GB",
                 "python": "3.12.0",
+                "platform": "Linux-test",
+                "cuda_runtime": "12.8",
+                "cuda_driver": "555.1",
+                "packages": {"torch": "2.11.0", "transformers": "5.0", "datasets": "4.0", "numpy": "2.0"},
                 "pip_freeze": ["datasets==4.0", "torch==2.11.0", "transformers==5.0"],
             },
         )
-        write_json(
-            smoke / "commands.json",
-            {"schema_version": "stage2_smoke_commands_v1", "argv": ["python", "run_stage2_smoke.py"]},
-        )
+        commit = self._git(Path(directory) / "repo", "rev-parse", "HEAD").stdout.strip()
+        for root, tags in ((smoke, ("shared_phase2", "standard_lora", "full_sr", "class_prior_reweight")), (smoke.parent / "colab_a100_repeat_full_sr", ("shared_phase2", "full_sr"))):
+            copy_environment = root / "manifests" / "environment_manifest.json"
+            copy_environment.parent.mkdir(parents=True, exist_ok=True)
+            copy_environment.write_bytes((manifests / "environment_manifest.json").read_bytes())
+            write_json(root / "commands.json", {"schema_version": "stage2_smoke_commands_v1", "mode": "primary" if root == smoke else "repeat_full_sr", "environment": "colab_a100", "argv": ["python", "run_stage2_smoke.py"], "expected_condition_tags": list(tags[1:]), "profile_name": "stage2_smoke_v1", "gpu_name": "NVIDIA A100-SXM4-40GB", "started_at": "2026-08-08T00:00:00+00:00"})
+            for tag in tags:
+                write_json(root / "seed_42" / tag / "run_manifest.json", {"git": {"commit": commit}})
         write_json(
             smoke / "stage2_validation.json",
             {
@@ -86,8 +100,12 @@ class Stage2FreezeTest(unittest.TestCase):
         )
         return smoke
 
-    def _validated_a100(self, primary, _repeat):
+    def _validated_a100(self, primary, _repeat, **_kwargs):
         return {"schema_version": "stage2_a100_repeat_comparison_v1", "state": "pass"}
+
+    @staticmethod
+    def _fake_gpu_probe():
+        return {"nvidia_smi": "NVIDIA A100-SXM4-40GB", "torch_gpu": "NVIDIA A100-SXM4-40GB", "torch_cuda": "12.8"}
 
     def test_source_package_binds_clean_commit_protocol_and_verified_git_bundle(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -132,7 +150,7 @@ class Stage2FreezeTest(unittest.TestCase):
                     protocol, smoke, freeze, repo,
                     source_archive_path=archive,
                     commands_path=smoke / "commands.json",
-                    backend_factory=CanonicalManifestBackend,
+                    backend_factory=CanonicalManifestBackend, gpu_probe=self._fake_gpu_probe,
                 )
 
             self.assertEqual("canonical_v1", result["target_schema"])
@@ -152,7 +170,7 @@ class Stage2FreezeTest(unittest.TestCase):
                     protocol, smoke, Path(tmp) / "freeze", repo,
                     source_archive_path=archive,
                     commands_path=smoke / "commands.json",
-                    backend_factory=ZeroArgumentCanonicalManifestBackend,
+                    backend_factory=ZeroArgumentCanonicalManifestBackend, gpu_probe=self._fake_gpu_probe,
                 )
             self.assertEqual("pass", result["state"])
 
@@ -165,7 +183,7 @@ class Stage2FreezeTest(unittest.TestCase):
             freeze = Path(tmp) / "freeze"
             with patch("canonical.freeze.compare_a100_repeat", self._validated_a100):
                 build_freeze_bundle(protocol, smoke, freeze, repo, source_archive_path=archive,
-                                    commands_path=smoke / "commands.json", backend_factory=CanonicalManifestBackend)
+                                    commands_path=smoke / "commands.json", backend_factory=CanonicalManifestBackend, gpu_probe=self._fake_gpu_probe)
             inventory = json.loads((freeze / "checksum_inventory.json").read_text(encoding="utf-8"))
             self.assertNotIn("checksum_inventory.json", inventory["files"])
             for relative, expected in inventory["files"].items():
@@ -189,7 +207,7 @@ class Stage2FreezeTest(unittest.TestCase):
             write_json(smoke / "stage2_validation.json", {"state": "fail"})
             with self.assertRaisesRegex(ValueError, "validated"):
                 build_freeze_bundle(protocol, smoke, Path(tmp) / "freeze", repo, source_archive_path=archive,
-                                    commands_path=smoke / "commands.json", backend_factory=CanonicalManifestBackend)
+                                    commands_path=smoke / "commands.json", backend_factory=CanonicalManifestBackend, gpu_probe=self._fake_gpu_probe)
             with self.assertRaisesRegex(ValueError, "canonical_v1"):
                 build_freeze_bundle(protocol, smoke, Path(tmp) / "canonical_v1" / "freeze", repo,
                                     source_archive_path=archive, commands_path=smoke / "commands.json",
@@ -204,7 +222,7 @@ class Stage2FreezeTest(unittest.TestCase):
             with patch("canonical.freeze.compare_a100_repeat", self._validated_a100):
                 with self.assertRaisesRegex(ValueError, "new or empty"):
                     build_freeze_bundle(protocol, smoke, occupied, repo, source_archive_path=archive,
-                                        commands_path=smoke / "commands.json", backend_factory=CanonicalManifestBackend)
+                                        commands_path=smoke / "commands.json", backend_factory=CanonicalManifestBackend, gpu_probe=self._fake_gpu_probe)
 
     def test_freeze_binds_requested_protocol_and_commands_to_validated_a100_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -218,18 +236,48 @@ class Stage2FreezeTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "protocol"):
                     build_freeze_bundle(other_protocol, smoke, Path(tmp) / "bad-protocol", repo,
                                         source_archive_path=archive, commands_path=smoke / "commands.json",
-                                        backend_factory=CanonicalManifestBackend)
+                                        backend_factory=CanonicalManifestBackend, gpu_probe=self._fake_gpu_probe)
                 copied_commands = Path(tmp) / "copied_commands.json"
                 copied_commands.write_bytes((smoke / "commands.json").read_bytes())
                 with self.assertRaisesRegex(ValueError, "commands"):
                     build_freeze_bundle(protocol, smoke, Path(tmp) / "bad-commands", repo,
                                         source_archive_path=archive, commands_path=copied_commands,
-                                        backend_factory=CanonicalManifestBackend)
+                                        backend_factory=CanonicalManifestBackend, gpu_probe=self._fake_gpu_probe)
 
     def test_dependency_light_cli_help(self):
         for script in ("package_stage2_source.py", "freeze_stage2_environment.py"):
             result = subprocess.run([sys.executable, script, "--help"], cwd=ROOT, text=True, capture_output=True)
             self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_evidence_archive_rejects_weights_and_preserves_only_safe_relative_members(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            primary = root / "ties_results" / "stage2_smoke" / "colab_a100_run1"
+            repeat = root / "ties_results" / "stage2_smoke" / "colab_a100_repeat_full_sr"
+            freeze = root / "ties_results" / "stage2_smoke" / "freeze_bundle"
+            for directory in (primary / "manifests", repeat / "manifests", freeze):
+                directory.mkdir(parents=True, exist_ok=True)
+            for path in (
+                primary / "commands.json", primary / "stage2_validation.json",
+                primary / "manifests" / "environment_manifest.json", primary / "metrics.json",
+                repeat / "commands.json", repeat / "manifests" / "environment_manifest.json",
+                freeze / "checksum_inventory.json",
+            ):
+                path.write_text("{}\n", encoding="utf-8")
+            monitors = root / "ties_results" / ".stage2_monitor"
+            monitors.mkdir(parents=True)
+            for name in ("colab_a100_run1.events.jsonl", "colab_a100_repeat_full_sr.events.jsonl"):
+                (monitors / name).write_text("{}\n", encoding="utf-8")
+            (primary / "checkpoint.pt").write_bytes(b"weights")
+            archive = root / "evidence.zip"
+
+            result = build_evidence_archive(root, archive)
+
+            self.assertEqual("pass", result["state"])
+            with zipfile.ZipFile(archive) as evidence:
+                self.assertNotIn("ties_results/stage2_smoke/colab_a100_run1/checkpoint.pt", evidence.namelist())
+                self.assertIn("evidence_checksum_inventory.json", evidence.namelist())
+                self.assertTrue(all(name.startswith("ties_results/") or name == "evidence_checksum_inventory.json" for name in evidence.namelist()))
 
 
 if __name__ == "__main__":
