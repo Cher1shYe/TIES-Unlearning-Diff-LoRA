@@ -15,6 +15,7 @@ from canonical.data import (
     split_hans_records,
     validate_hans_disjointness,
 )
+from canonical.access_audit import record_dataset_access
 
 def set_seed(seed: int):
     random.seed(seed)
@@ -177,6 +178,8 @@ def _prepare_esnli_test_dataset(cfg: TrainConfig, tok) -> Dataset:
 
 def make_mnli_loaders(cfg: TrainConfig, tok, return_dataset=False):
     # 1. Fetch and sample data
+    record_dataset_access(cfg, dataset="mnli", split="train", purpose="training")
+    record_dataset_access(cfg, dataset="mnli", split="validation_matched", purpose="validation")
     ds = load_dataset("nyu-mll/glue", "mnli")
     train_ds = _sample(ds["train"], cfg.mnli_train_size, cfg.data_seed)
     val_ds = _sample(ds["validation_matched"], cfg.mnli_val_size, cfg.data_seed)
@@ -206,6 +209,8 @@ def make_hans_loader(cfg: TrainConfig, tok):
     return make_hans_evaluation_loader(cfg, tok)
 
 def _make_hans_loader(cfg: TrainConfig, tok, split: str):
+    purpose = "final" if split == "evaluation" else "analysis"
+    record_dataset_access(cfg, dataset="hans", split=split, purpose=purpose)
     hans = _prepare_hans_base_dataset(cfg, tok, split=split)
     hans.set_format(type="torch", columns=[
         "input_ids", "attention_mask", "label", "heuristic", "pair_id",
@@ -233,6 +238,7 @@ def make_hans_split_manifest(cfg: TrainConfig):
     return manifest
 
 def make_esnli_test_loader(cfg: TrainConfig, tok):
+    record_dataset_access(cfg, dataset="esnli", split="test", purpose="final")
     test_ds = _prepare_esnli_test_dataset(cfg, tok)
     cols = ["input_ids", "attention_mask", "label"]
     test_ds.set_format(type="torch", columns=cols)
@@ -263,6 +269,7 @@ def _prepare_anli_test_dataset(cfg: TrainConfig, tok) -> Dataset:
     return anli.map(_tok_anli, batched=True)
 
 def make_anli_test_loader(cfg: TrainConfig, tok):
+    record_dataset_access(cfg, dataset="anli", split="test", purpose="final")
     test_ds = _prepare_anli_test_dataset(cfg, tok)
     cols = ["input_ids", "attention_mask", "label"]
     test_ds.set_format(type="torch", columns=cols)
@@ -302,6 +309,7 @@ def _prepare_snli_hard_test_dataset(cfg: TrainConfig, tok) -> Dataset:
     return snli.map(_tok_snli, batched=True)
 
 def make_snli_hard_test_loader(cfg: TrainConfig, tok):
+    record_dataset_access(cfg, dataset="snli_hard", split="test", purpose="final")
     test_ds = _prepare_snli_hard_test_dataset(cfg, tok)
     cols = ["input_ids", "attention_mask", "label"]
     test_ds.set_format(type="torch", columns=cols)
@@ -340,6 +348,7 @@ def _prepare_wanli_test_dataset(cfg: TrainConfig, tok) -> Dataset:
     return wanli.map(_tok_wanli, batched=True)
 
 def make_wanli_test_loader(cfg: TrainConfig, tok):
+    record_dataset_access(cfg, dataset="wanli", split="test", purpose="final")
     test_ds = _prepare_wanli_test_dataset(cfg, tok)
     cols = ["input_ids", "attention_mask", "label"]
     test_ds.set_format(type="torch", columns=cols)
@@ -371,6 +380,7 @@ def make_phase2_biased_mixed_loader(cfg: TrainConfig, tok):
     parts = []
 
     if mnli_n > 0:
+        record_dataset_access(cfg, dataset="mnli", split="train", purpose="phase2")
         mnli = load_dataset("nyu-mll/glue", "mnli")["train"]
         mnli = _sample_fixed_count(mnli, mnli_n, seed=cfg.data_seed + 611)
         mnli = mnli.map(lambda b: _tokenize_pair(tok, b, cfg.max_seq_length), batched=True)
@@ -379,6 +389,12 @@ def make_phase2_biased_mixed_loader(cfg: TrainConfig, tok):
         parts.append(mnli)
 
     if hans_n > 0:
+        record_dataset_access(
+            cfg,
+            dataset="hans",
+            split="build" if cfg.hans_clean_split else "evaluation",
+            purpose="phase2",
+        )
         hans = _prepare_hans_analysis_base(cfg)
         hans_ent = hans.filter(lambda ex: int(ex["label"]) == 0)
         hans_ent = _sample_fixed_count(hans_ent, hans_n, seed=cfg.data_seed + 712)
@@ -429,6 +445,13 @@ def _select_analysis_columns(ds: Dataset) -> Dataset:
 
 def make_phase2_5_analysis_loaders(cfg: TrainConfig, tok):
     # Construct reference bank and query set as needed: sample MNLI / HANS entail / HANS non-entail separately and then merge.
+    record_dataset_access(cfg, dataset="mnli", split="train", purpose="layer_localization")
+    record_dataset_access(
+        cfg,
+        dataset="hans",
+        split="build" if cfg.hans_clean_split else "evaluation",
+        purpose="layer_localization",
+    )
     mnli = load_dataset("nyu-mll/glue", "mnli")["train"]
     mnli_ref_raw, mnli_query_raw = _split_for_reference_and_query(
         mnli,
@@ -498,6 +521,8 @@ def make_debias_datasets(cfg: TrainConfig, tok):
     ``train_full`` and ``train_hyp`` are derived from the *same* sampled base, so
     ``idx`` is consistent across the two encodings.
     """
+    record_dataset_access(cfg, dataset="mnli", split="train", purpose="training")
+    record_dataset_access(cfg, dataset="mnli", split="validation_matched", purpose="validation")
     ds = load_dataset("nyu-mll/glue", "mnli")
     # Identical sampling to make_mnli_loaders so the comparison stays fair.
     train_base = _sample(ds["train"], cfg.mnli_train_size, cfg.data_seed)

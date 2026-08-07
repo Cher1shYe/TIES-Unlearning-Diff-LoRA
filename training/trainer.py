@@ -40,6 +40,7 @@ from utils.optim_utils import (
 from training.evaluate import eval_mnli, eval_hans, eval_esnli, eval_anli, eval_snli_hard, eval_wanli
 from training.weighting import compute_class_priors, resolve_weighting_mode, torch_phase3_weights
 from canonical.artifacts import sha256_file, write_json, write_jsonl
+from canonical.access_audit import record_final_evaluation_start
 from canonical.results import attach_final_metrics
 
 
@@ -543,6 +544,7 @@ def train_ties_unlearn(
 
     # Official HANS and all other final-only OOD loaders are constructed only
     # after the frozen branch has finished training and its final state is saved.
+    record_final_evaluation_start(cfg)
     hans_loader = make_hans_evaluation_loader(cfg, tok)
     esnli_loader = make_esnli_test_loader(cfg, tok)
     anli_loader = make_anli_test_loader(cfg, tok)

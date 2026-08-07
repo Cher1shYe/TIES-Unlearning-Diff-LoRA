@@ -27,6 +27,7 @@ from training.evaluate import (
     eval_mnli, eval_hans, eval_esnli, eval_anli, eval_snli_hard, eval_wanli,
 )
 from canonical.artifacts import sha256_file, write_json, write_jsonl
+from canonical.access_audit import record_final_evaluation_start
 from canonical.results import attach_final_metrics
 
 def train_single_lora_baseline(cfg: TrainConfig, *, method_tag=None):
@@ -120,6 +121,7 @@ def train_single_lora_baseline(cfg: TrainConfig, *, method_tag=None):
         )
         final_checkpoint_hash = sha256_file(final_state_path)
 
+    record_final_evaluation_start(cfg)
     hans_loader = make_hans_evaluation_loader(cfg, tok)
     esnli_loader = make_esnli_test_loader(cfg, tok)
     anli_loader = make_anli_test_loader(cfg, tok)

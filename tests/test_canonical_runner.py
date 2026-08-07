@@ -43,7 +43,18 @@ class FakeBackend:
         checkpoint = shared_dir / "checkpoints" / "shared.pt"
         checkpoint.parent.mkdir(parents=True, exist_ok=True)
         checkpoint.write_bytes(f"shared-{training_seed}".encode("ascii"))
-        return CheckpointRef(checkpoint, sha256_file(checkpoint))
+        checkpoint_hash = sha256_file(checkpoint)
+        write_json(
+            shared_dir / "shared_checkpoint_metadata.json",
+            {
+                "checkpoint_role": "canonical_shared_phase2",
+                "checkpoint_path": str(checkpoint),
+                "checkpoint_sha256": checkpoint_hash,
+                "class_prior_weights": {"0": 0.1, "1": 0.2, "2": 0.3},
+            },
+        )
+        write_jsonl(shared_dir / "data_access.jsonl", [])
+        return CheckpointRef(checkpoint, checkpoint_hash)
 
     def _write_method_artifacts(self, tag, training_seed, run_dir):
         if self.fail_method == tag:
@@ -52,6 +63,7 @@ class FakeBackend:
         write_json(run_dir / "config.json", {"method_tag": tag, "training_seed": training_seed})
         write_json(run_dir / "metrics.json", {"hans": {"hans_overall": 0.5}})
         write_json(run_dir / "selected_layers.json", {"shortcut_layers": []})
+        write_jsonl(run_dir / "data_access.jsonl", [])
         write_jsonl(
             run_dir / "hans_predictions.jsonl",
             [{
@@ -206,6 +218,7 @@ class RealCanonicalBackendContractTest(unittest.TestCase):
                     return {
                         "checkpoint_path": str(checkpoint),
                         "checkpoint_hash": sha256_file(checkpoint),
+                        "class_prior_weights": {0: 0.1, 1: 0.2, 2: 0.3},
                     }
                 calls["branch"] = (cfg, kwargs)
                 write_json(Path(cfg.output_dir) / cfg.experiment_name / "metrics.json", {})
@@ -226,6 +239,7 @@ class RealCanonicalBackendContractTest(unittest.TestCase):
             self.assertEqual(str(shared_dir.parent), prepare_cfg.output_dir)
             self.assertEqual(shared_dir.name, prepare_cfg.experiment_name)
             self.assertEqual(str(shared_dir / "checkpoints"), prepare_cfg.checkpoint_dir)
+            self.assertEqual(str(shared_dir / "data_access.jsonl"), prepare_cfg.data_access_log)
             self.assertTrue(prepare_kwargs["stop_after_phase2"])
 
             branch_cfg, branch_kwargs = calls["branch"]
@@ -236,6 +250,7 @@ class RealCanonicalBackendContractTest(unittest.TestCase):
             self.assertEqual(checkpoint.sha256, branch_kwargs["checkpoint_hash"])
             self.assertEqual("b" * 64, result["final_checkpoint_hash"])
             self.assertTrue((shared_dir / "config.json").is_file())
+            self.assertTrue((shared_dir / "shared_checkpoint_metadata.json").is_file())
             self.assertTrue((run_dir / "config.json").is_file())
 
     def test_standard_backend_uses_baseline_with_frozen_training_seed(self):

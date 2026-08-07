@@ -51,6 +51,7 @@ _METHOD_OUTPUTS = (
     "metrics.json",
     "hans_predictions.jsonl",
     "selected_layers.json",
+    "data_access.jsonl",
     "stdout.log",
     "stderr.log",
 )
@@ -58,6 +59,8 @@ _SHARED_OUTPUTS = (
     "config.json",
     "run_manifest.json",
     "shared_checkpoint.json",
+    "shared_checkpoint_metadata.json",
+    "data_access.jsonl",
     "stdout.log",
     "stderr.log",
 )

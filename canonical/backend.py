@@ -89,6 +89,7 @@ class RealCanonicalBackend:
         cfg.training_seed = int(training_seed)
         cfg.output_dir = str(directory.parent)
         cfg.experiment_name = directory.name
+        cfg.data_access_log = str(directory / "data_access.jsonl")
         return cfg
 
     def initialize_manifests(self, output_dir: Path, protocol_path: Path) -> None:
@@ -189,6 +190,20 @@ class RealCanonicalBackend:
             raise ValueError(f"Shared training did not create checkpoint: {checkpoint_path}")
         if sha256_file(checkpoint_path) != checkpoint_hash:
             raise ValueError("Shared training returned a checkpoint hash mismatch.")
+        class_prior_weights = result.get("class_prior_weights")
+        if not isinstance(class_prior_weights, Mapping):
+            raise ValueError("Shared training did not return class-prior weights.")
+        write_json(
+            shared_dir / "shared_checkpoint_metadata.json",
+            {
+                "checkpoint_role": "canonical_shared_phase2",
+                "checkpoint_path": str(checkpoint_path),
+                "checkpoint_sha256": checkpoint_hash,
+                "class_prior_weights": {
+                    str(label): float(weight) for label, weight in class_prior_weights.items()
+                },
+            },
+        )
         return CheckpointRef(checkpoint_path, checkpoint_hash)
 
     def run_standard(
