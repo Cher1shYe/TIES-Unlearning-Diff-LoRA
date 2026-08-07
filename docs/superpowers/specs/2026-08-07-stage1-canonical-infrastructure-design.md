@@ -59,7 +59,7 @@ The frozen trim contract keeps exactly `max(1, floor(trim_ratio × numel))` elem
 
 ### 2. Data contract
 
-HANS-train will be partitioned by `gold_label × heuristic × subcase`. Within each stratum, records are first sorted by stable `pairID`, then permuted with NumPy `default_rng(hans_split_seed)`. The first `floor(0.20 × n)` records enter dev; the rest enter build. Strata smaller than five records remain entirely in build and are recorded in the split manifest.
+HANS-train will be partitioned by `gold_label × heuristic × subcase`. Within each stratum, records are first sorted by stable `pairID`, then a fresh NumPy `default_rng(hans_split_seed)` generates that stratum's permutation. The first `floor(0.20 × n)` records enter dev; the rest enter build. Strata smaller than five records remain entirely in build and are recorded in the split manifest.
 
 The manifest will contain build/dev pair IDs, small-stratum notices, counts, the split seed, and a SHA-256 checksum derived from a canonical UTF-8 serialization of the split membership. Build, dev, and official evaluation pair-ID sets must be disjoint before a canonical run can proceed.
 
