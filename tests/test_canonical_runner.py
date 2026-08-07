@@ -111,6 +111,19 @@ class CanonicalRunnerContractTest(unittest.TestCase):
             for tag in ("standard_lora", "full_sr", "subtraction_only", "reweight_only", "staged_neither", "class_prior_reweight"):
                 status = json.loads((output / "seed_42" / tag / "status.json").read_text(encoding="utf-8"))
                 self.assertEqual("success", status["state"])
+                manifest = json.loads(
+                    (output / "seed_42" / tag / "run_manifest.json").read_text(
+                        encoding="utf-8"
+                    )
+                )
+                self.assertEqual(
+                    sha256_file(output / "manifests" / "data_manifest.json"),
+                    manifest["data_manifest_sha256"],
+                )
+                self.assertEqual(
+                    sha256_file(output / "manifests" / "environment_manifest.json"),
+                    manifest["environment_manifest_sha256"],
+                )
 
     def test_method_order_is_rotated_by_frozen_seed_index(self):
         with tempfile.TemporaryDirectory() as tmp:

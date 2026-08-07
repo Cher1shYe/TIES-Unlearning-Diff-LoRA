@@ -114,12 +114,15 @@ def _write_or_validate_protocol_snapshot(
     return protocol_hash
 
 
-def _validate_manifests(output_dir: Path) -> None:
+def _validate_manifests(output_dir: Path) -> dict[str, str]:
+    hashes = {}
     for name in ("data_manifest.json", "environment_manifest.json"):
         path = output_dir / "manifests" / name
         if not path.is_file():
             raise ValueError(f"Canonical manifest is missing: {path}")
         _read_json(path)
+        hashes[name] = sha256_file(path)
+    return hashes
 
 
 def _write_or_validate_run_matrix(
@@ -174,6 +177,7 @@ def _base_run_manifest(
     method_tag: str | None,
     protocol_hash: str,
     git_metadata: Mapping[str, Any],
+    manifest_hashes: Mapping[str, str],
     command: Sequence[str],
     shared_checkpoint: CheckpointRef | None,
 ) -> dict[str, Any]:
@@ -185,6 +189,8 @@ def _base_run_manifest(
         "hans_split_seed": 42,
         "training_seed": training_seed,
         "protocol_sha256": protocol_hash,
+        "data_manifest_sha256": manifest_hashes["data_manifest.json"],
+        "environment_manifest_sha256": manifest_hashes["environment_manifest.json"],
         "git": dict(git_metadata),
         "command": list(command),
         "shared_phase2_checkpoint": (
@@ -229,6 +235,7 @@ def _prepare_shared(
     *,
     protocol_hash: str,
     git_metadata: Mapping[str, Any],
+    manifest_hashes: Mapping[str, str],
     command: Sequence[str],
 ) -> CheckpointRef:
     if _is_checksum_valid_success(shared_dir):
@@ -244,6 +251,7 @@ def _prepare_shared(
         method_tag=None,
         protocol_hash=protocol_hash,
         git_metadata=git_metadata,
+        manifest_hashes=manifest_hashes,
         command=command,
         shared_checkpoint=None,
     )
@@ -310,6 +318,7 @@ def _execute_method(
     shared_checkpoint: CheckpointRef,
     protocol_hash: str,
     git_metadata: Mapping[str, Any],
+    manifest_hashes: Mapping[str, str],
     command: Sequence[str],
 ) -> bool:
     if _is_checksum_valid_success(run_dir):
@@ -321,6 +330,7 @@ def _execute_method(
         method_tag=condition.tag,
         protocol_hash=protocol_hash,
         git_metadata=git_metadata,
+        manifest_hashes=manifest_hashes,
         command=command,
         shared_checkpoint=None if condition.standard_lora else shared_checkpoint,
     )
@@ -389,7 +399,7 @@ def run_core(
     protocol_hash = _write_or_validate_protocol_snapshot(protocol_path, output_dir, fresh)
     if fresh:
         backend.initialize_manifests(output_dir, protocol_path)
-    _validate_manifests(output_dir)
+    manifest_hashes = _validate_manifests(output_dir)
     _write_or_validate_run_matrix(output_dir, seeds_tuple, fresh)
     invocation = tuple(command or sys.argv)
 
@@ -403,6 +413,7 @@ def run_core(
             seed_dir / "shared_phase2",
             protocol_hash=protocol_hash,
             git_metadata=git_info,
+            manifest_hashes=manifest_hashes,
             command=invocation,
         )
         for tag in rotated_condition_order(training_seed):
@@ -415,6 +426,7 @@ def run_core(
                 shared_checkpoint=shared,
                 protocol_hash=protocol_hash,
                 git_metadata=git_info,
+                manifest_hashes=manifest_hashes,
                 command=invocation,
             )
             target = {"training_seed": training_seed, "method_tag": tag}
