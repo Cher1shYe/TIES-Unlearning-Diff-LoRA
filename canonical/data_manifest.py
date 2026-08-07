@@ -55,8 +55,13 @@ def dataset_identity_entry(
     else:
         selected_rows = [dict(record) for record in selected_records]
         selected_ids = [stable_record_id(row, preferred_id_fields) for row in selected_rows]
-        if selected_limit is not None and len(selected_ids) > selected_limit:
-            raise ValueError("selected records exceed selected limit")
+        if not selected_ids:
+            raise ValueError("dataset identity entry rejects empty selected membership")
+        if selected_limit is None:
+            if len(selected_ids) != len(full_ids):
+                raise ValueError("selected records must match full dataset membership")
+        elif len(selected_ids) != min(selected_limit, len(full_ids)):
+            raise ValueError("selected records must exactly match selected limit membership")
 
     if not selected_ids:
         raise ValueError("dataset identity entry rejects empty selected membership")

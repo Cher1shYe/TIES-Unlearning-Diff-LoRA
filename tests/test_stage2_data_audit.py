@@ -4,6 +4,7 @@ import sys
 import tempfile
 import types
 import unittest
+from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -139,6 +140,63 @@ class DataIdentityManifestTest(unittest.TestCase):
         )
 
         self.assertEqual(4, entry["selected_count"])
+
+    def test_identity_entry_requires_exact_explicit_selected_membership(self):
+        kwargs = {
+            "source": "fixture",
+            "split": "test",
+            "preferred_id_fields": ("uid",),
+            "seed": 42,
+        }
+        cases = (
+            ("empty", 2, []),
+            ("duplicate", 2, [MANIFEST_ROWS[0], MANIFEST_ROWS[0]]),
+            ("full dataset", None, MANIFEST_ROWS[:2]),
+            ("selected", 2, MANIFEST_ROWS[:1]),
+            ("not present", 2, [{"uid": "outside"}, MANIFEST_ROWS[0]]),
+        )
+
+        for message, selected_limit, selected_records in cases:
+            with self.subTest(message=message, selected_limit=selected_limit):
+                with self.assertRaisesRegex(ValueError, message):
+                    dataset_identity_entry(
+                        MANIFEST_ROWS,
+                        selected_limit=selected_limit,
+                        selected_records=selected_records,
+                        **kwargs,
+                    )
+
+    def test_identity_entry_checksums_use_utf8_canonical_json_for_full_and_selected_ids(self):
+        rows = [
+            {"uid": "café-α"},
+            {"uid": "東京-β"},
+            {"uid": "München-γ"},
+        ]
+        selected = [rows[2], rows[0]]
+        entry = dataset_identity_entry(
+            rows,
+            source="fixture",
+            split="test",
+            preferred_id_fields=("uid",),
+            selected_limit=2,
+            selected_records=selected,
+            seed=42,
+        )
+
+        def checksum(ids):
+            payload = json.dumps(
+                ids,
+                ensure_ascii=False,
+                allow_nan=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            return sha256(payload).hexdigest()
+
+        self.assertEqual(["café-α", "東京-β", "München-γ"], entry["full_ids"])
+        self.assertEqual(["München-γ", "café-α"], entry["selected_ids"])
+        self.assertEqual(checksum(entry["full_ids"]), entry["full_ids_sha256"])
+        self.assertEqual(checksum(entry["selected_ids"]), entry["selected_ids_sha256"])
 
     def test_ood_raw_loader_interfaces_are_public_without_network_access(self):
         dataloader = StructuredDataAccessAuditTest._dataloader_module_with_dependency_stubs()
