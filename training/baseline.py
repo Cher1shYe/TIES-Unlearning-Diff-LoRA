@@ -27,7 +27,7 @@ from training.evaluate import (
     eval_mnli, eval_hans, eval_esnli, eval_anli, eval_snli_hard, eval_wanli,
 )
 from canonical.artifacts import sha256_file, write_json, write_jsonl
-from canonical.results import validate_final_metric_schema
+from canonical.results import attach_final_metrics
 
 def train_single_lora_baseline(cfg: TrainConfig, *, method_tag=None):
     """
@@ -169,7 +169,7 @@ def train_single_lora_baseline(cfg: TrainConfig, *, method_tag=None):
     }
 
     if method_tag is not None:
-        validate_final_metric_schema(metrics)
+        metrics = attach_final_metrics(metrics, metrics)
         write_json(os.path.join(run_dir, "metrics.json"), metrics)
         write_jsonl(os.path.join(run_dir, "hans_predictions.jsonl"), hans_predictions)
         write_json(os.path.join(run_dir, "selected_layers.json"), {})

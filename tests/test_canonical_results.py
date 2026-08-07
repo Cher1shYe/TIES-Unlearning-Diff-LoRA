@@ -7,7 +7,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from canonical.results import FINAL_EVALUATION_KEYS, validate_final_metric_schema
+from canonical.results import (
+    FINAL_EVALUATION_KEYS,
+    attach_final_metrics,
+    validate_final_metric_schema,
+)
 
 
 class CanonicalResultSchemaContractTest(unittest.TestCase):
@@ -41,6 +45,15 @@ class CanonicalResultSchemaContractTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "wanli"):
             validate_final_metric_schema(metrics)
+
+    def test_standard_and_staged_documents_share_one_final_metrics_location(self):
+        final = self._metrics()
+
+        standard = attach_final_metrics({"method": "standard_lora"}, final)
+        staged = attach_final_metrics({"method": "full_sr", "phase3": final}, final)
+
+        self.assertEqual(standard["final"], staged["final"])
+        self.assertEqual(tuple(FINAL_EVALUATION_KEYS), tuple(standard["final"]))
 
 
 if __name__ == "__main__":

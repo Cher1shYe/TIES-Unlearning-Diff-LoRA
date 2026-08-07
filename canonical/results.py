@@ -45,3 +45,12 @@ def validate_final_metric_schema(metrics: Mapping[str, Any]) -> dict[str, Any]:
             )
         normalized[group] = dict(payload)
     return normalized
+
+
+def attach_final_metrics(
+    document: Mapping[str, Any], final_metrics: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Return a result document with the canonical evaluation battery at ``final``."""
+    result = dict(document)
+    result["final"] = validate_final_metric_schema(final_metrics)
+    return result
