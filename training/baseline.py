@@ -19,12 +19,15 @@ except ImportError:
 from configs.config import TrainConfig, LoRAConfig
 from data.dataloader import (
     set_seed, make_mnli_loaders, make_hans_evaluation_loader, make_esnli_test_loader,
-    make_anli_test_loader, make_snli_hard_test_loader,
+    make_anli_test_loader, make_snli_hard_test_loader, make_wanli_test_loader,
 )
 from models.surgery import inject_ties_unlearn_lora
 from utils.optim_utils import _split_params, _make_scaler, _amp_enabled
-from training.evaluate import eval_mnli, eval_hans, eval_esnli, eval_anli, eval_snli_hard
+from training.evaluate import (
+    eval_mnli, eval_hans, eval_esnli, eval_anli, eval_snli_hard, eval_wanli,
+)
 from canonical.artifacts import sha256_file, write_json, write_jsonl
+from canonical.results import validate_final_metric_schema
 
 def train_single_lora_baseline(cfg: TrainConfig, *, method_tag=None):
     """
@@ -121,6 +124,11 @@ def train_single_lora_baseline(cfg: TrainConfig, *, method_tag=None):
     esnli_loader = make_esnli_test_loader(cfg, tok)
     anli_loader = make_anli_test_loader(cfg, tok)
     snli_hard_loader = make_snli_hard_test_loader(cfg, tok)
+    try:
+        wanli_loader = make_wanli_test_loader(cfg, tok)
+    except Exception as e:
+        print(f"[Baseline] WARNING: could not load WANLI ({e}); WANLI eval skipped (n/a).")
+        wanli_loader = None
     bl_mnli = eval_mnli(model, val_loader, device)
     hans_predictions = None
     if method_tag is not None:
@@ -139,6 +147,11 @@ def train_single_lora_baseline(cfg: TrainConfig, *, method_tag=None):
     bl_esnli = eval_esnli(model, esnli_loader, device)
     bl_anli = eval_anli(model, anli_loader, device)
     bl_snli_hard = eval_snli_hard(model, snli_hard_loader, device)
+    bl_wanli = (
+        eval_wanli(model, wanli_loader, device)
+        if wanli_loader is not None
+        else {"wanli_accuracy": None if method_tag is not None else float("nan")}
+    )
 
     metrics = {
         "method": "Single LoRA Baseline",
@@ -147,6 +160,7 @@ def train_single_lora_baseline(cfg: TrainConfig, *, method_tag=None):
         "esnli": bl_esnli,
         "anli": bl_anli,
         "snli_hard": bl_snli_hard,
+        "wanli": bl_wanli,
         "config": asdict(cfg),
         "checkpoint_provenance": {
             "source_phase2_checkpoint_hash": None,
@@ -155,6 +169,7 @@ def train_single_lora_baseline(cfg: TrainConfig, *, method_tag=None):
     }
 
     if method_tag is not None:
+        validate_final_metric_schema(metrics)
         write_json(os.path.join(run_dir, "metrics.json"), metrics)
         write_jsonl(os.path.join(run_dir, "hans_predictions.jsonl"), hans_predictions)
         write_json(os.path.join(run_dir, "selected_layers.json"), {})

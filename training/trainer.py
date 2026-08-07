@@ -40,6 +40,7 @@ from utils.optim_utils import (
 from training.evaluate import eval_mnli, eval_hans, eval_esnli, eval_anli, eval_snli_hard, eval_wanli
 from training.weighting import compute_class_priors, resolve_weighting_mode, torch_phase3_weights
 from canonical.artifacts import sha256_file, write_json, write_jsonl
+from canonical.results import validate_final_metric_schema
 
 
 @torch.no_grad()
@@ -625,6 +626,7 @@ def train_ties_unlearn(
     # --- save ---
     metrics["history"] = history
     if method_tag is not None:
+        validate_final_metric_schema(metrics["phase3"])
         write_json(os.path.join(run_dir, "metrics.json"), metrics)
         write_jsonl(os.path.join(run_dir, "hans_predictions.jsonl"), hans_predictions)
         write_json(os.path.join(run_dir, "selected_layers.json"), metrics.get("phase2_5", {}))
