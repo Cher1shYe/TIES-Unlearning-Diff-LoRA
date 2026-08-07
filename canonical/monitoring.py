@@ -41,7 +41,8 @@ FATAL_PATTERNS = {
     ),
     "DOWNLOAD_FAILURE": re.compile(
         r"\b(?:download|network|connection)(?:\s+\w+){0,3}\s+(?:failed|failure|error)\b|"
-        r"\b(?:failed|failure|error)\s+(?:to\s+)?(?:download|connect|fetch)\b"
+        r"\b(?:failed|failure|error)\s+(?:to\s+)?(?:download|connect|fetch)\b|"
+        r"\bconnectionerror\s*:\s*(?:could not|unable to)?\s*connect\b|\bcould not connect\b"
     ),
     "CHECKPOINT_HASH_MISMATCH": re.compile(
         r"\b(?:checkpoint(?:[_\s-]?hash)?|sha[- ]?256)(?:\s+\w+){0,4}\s+(?:mismatch|invalid)\b|"
@@ -49,7 +50,8 @@ FATAL_PATTERNS = {
     ),
     "PREDICTION_ROW_MISMATCH": re.compile(
         r"\b(?:prediction(?:[_\s-]?(?:row|count|hash))?|hans\s+metrics)(?:\s+\w+){0,6}\s+"
-        r"(?:mismatch|invalid)\b|\b(?:metrics|prediction).*(?:recomputed|recompute).*\bmismatch\b"
+        r"(?:mismatch|invalid)\b|\bhans\s+metrics\s+do\s+not(?:\s+\w+){0,3}\s+match\s+"
+        r"recomputed\s+predictions\b|\b(?:metrics|prediction).*(?:recomputed|recompute).*\bmismatch\b"
     ),
 }
 
@@ -210,7 +212,6 @@ def monitor_command(
         raise ValueError("clock must return a finite number")
     initial_fingerprints = _fingerprints(watched, excluded_path=resolved_event_file)
     seen_fatal_patterns: set[str] = set()
-    seen_watch_errors: set[tuple[str, str]] = set()
 
     def emit(event: str, now: float, **details: object) -> None:
         elapsed_seconds = now - started_at
@@ -263,12 +264,11 @@ def monitor_command(
                 emit("PROGRESS", now, fingerprints=current_fingerprints)
             previous_fingerprints = current_fingerprints
 
-        for fingerprint in current_fingerprints:
-            if "error" in fingerprint:
-                key = (str(fingerprint["path"]), str(fingerprint["error"]))
-                if key not in seen_watch_errors:
-                    seen_watch_errors.add(key)
-                    emit("WATCH_ERROR", now, path=key[0], error=key[1])
+        watch_errors = [
+            {"path": str(fingerprint["path"]), "error": str(fingerprint["error"])}
+            for fingerprint in current_fingerprints
+            if "error" in fingerprint
+        ]
 
         for pattern_name, pattern_path in _fatal_matches(watched, excluded_path=resolved_event_file):
             if pattern_name not in seen_fatal_patterns:
@@ -280,6 +280,7 @@ def monitor_command(
             now,
             returncode=return_code,
             fingerprints=current_fingerprints,
+            watch_errors=watch_errors,
         )
         if return_code is not None:
             emit("COMPLETED" if return_code == 0 else "CRASHED", now, returncode=return_code)
@@ -290,13 +291,13 @@ def monitor_command(
             emit("HARD_TIMEOUT", now, timeout_seconds=policy.hard_timeout_seconds)
             process.terminate()
             terminate_deadline = clock() + 10
-            grace_checks_remaining = 10
-            while grace_checks_remaining > 0 and process.poll() is None:
+            while process.poll() is None:
                 grace_now = clock()
                 if grace_now >= terminate_deadline:
                     break
                 sleep(min(1.0, terminate_deadline - grace_now))
-                grace_checks_remaining -= 1
+                if clock() <= grace_now:
+                    break
             if process.poll() is None:
                 process.kill()
             return 124

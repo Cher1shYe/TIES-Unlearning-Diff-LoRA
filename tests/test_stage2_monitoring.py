@@ -67,6 +67,11 @@ class FrozenGraceProcess(FakeProcess):
         return super().poll()
 
 
+class HalfSpeedClock(FakeClock):
+    def sleep(self, seconds):
+        self.value += min(seconds, 0.5)
+
+
 class Stage2MonitoringTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -153,6 +158,26 @@ class Stage2MonitoringTest(unittest.TestCase):
         self.assertTrue(process.killed)
         self.assertLess(process.checks, 20)
 
+    def test_hard_timeout_waits_full_ten_seconds_when_clock_advances_half_speed(self):
+        process = FakeProcess(exit_after_checks=None, ignores_terminate=True)
+        clock = HalfSpeedClock()
+
+        result = monitor_command(
+            self.command,
+            cwd=self.root,
+            events_path=self.events,
+            watched_paths=[self.log],
+            policy=MonitorPolicy(1, 20, 1),
+            clock=clock,
+            sleep=clock.sleep,
+            popen_factory=lambda *args, **kwargs: process,
+        )
+
+        self.assertEqual(result, 124)
+        self.assertTrue(process.killed)
+        self.assertGreaterEqual(clock.value, 11)
+        self.assertLessEqual(clock.value, 11.5)
+
     def test_changed_file_fingerprint_records_progress(self):
         self.log.write_text("epoch 1\n", encoding="utf-8")
         process = FakeProcess(exit_after_checks=3)
@@ -200,9 +225,9 @@ class Stage2MonitoringTest(unittest.TestCase):
                 [
                     "RuntimeError: CUDA error: out of memory",
                     "training loss: NaN",
-                    "network connection failure while downloading model",
+                    "requests.exceptions.ConnectionError: could not connect",
                     "checkpoint_hash SHA-256 mismatch",
-                    "HANS metrics vs recomputed prediction row count mismatch",
+                    "HANS metrics do not exactly match recomputed predictions",
                 ]
             ),
             encoding="utf-8",
@@ -284,7 +309,7 @@ class Stage2MonitoringTest(unittest.TestCase):
         self.assertEqual(records[-1]["returncode"], 127)
         self.assertEqual(records[-1]["failure_stage"], "popen")
 
-    def test_unreadable_watched_path_emits_a_stable_watch_error(self):
+    def test_unreadable_watched_path_is_reported_in_status_check_without_new_event_type(self):
         blocked = self.root / "blocked.log"
         original_stat = Path.stat
 
@@ -301,12 +326,12 @@ class Stage2MonitoringTest(unittest.TestCase):
             )
 
         records = self._records()
-        watch_errors = [record for record in records if record["event"] == "WATCH_ERROR"]
+        status = next(record for record in records if record["event"] == "STATUS_CHECK")
         self.assertEqual(result, 0)
-        self.assertEqual(len(watch_errors), 1)
-        self.assertEqual(watch_errors[0]["error"], "PermissionError")
+        self.assertEqual(status["watch_errors"], [{"path": str(blocked), "error": "PermissionError"}])
+        self.assertNotIn("WATCH_ERROR", [record["event"] for record in records])
 
-    def test_unreadable_watched_directory_glob_emits_a_stable_watch_error(self):
+    def test_unreadable_watched_directory_glob_is_reported_in_status_check(self):
         original_rglob = Path.rglob
 
         def blocked_rglob(path, pattern):
@@ -321,10 +346,9 @@ class Stage2MonitoringTest(unittest.TestCase):
                 watched_paths=[self.root],
             )
 
-        watch_errors = [record for record in self._records() if record["event"] == "WATCH_ERROR"]
+        status = next(record for record in self._records() if record["event"] == "STATUS_CHECK")
         self.assertEqual(result, 0)
-        self.assertEqual(len(watch_errors), 1)
-        self.assertEqual(watch_errors[0]["error"], "PermissionError")
+        self.assertEqual(status["watch_errors"], [{"path": str(self.root), "error": "PermissionError"}])
 
     def test_event_jsonl_has_common_strict_schema_and_no_nonfinite_numbers(self):
         process = FakeProcess(exit_after_checks=1)
@@ -341,6 +365,37 @@ class Stage2MonitoringTest(unittest.TestCase):
             self.assertIsInstance(record["elapsed_seconds"], (int, float))
             self.assertTrue(math.isfinite(record["timestamp"]))
             self.assertTrue(math.isfinite(record["elapsed_seconds"]))
+
+    def test_monitor_preflight_keeps_documented_fresh_output_root_absent(self):
+        output_root = self.root / "ties_results" / "stage2_smoke" / "local_rtx5080"
+        evidence = self.root / "ties_results" / ".stage2_monitor" / "local_rtx5080.events.jsonl"
+
+        def child_fresh_gate(*args, **kwargs):
+            self.assertFalse(output_root.exists(), "monitor preflight polluted child --fresh output root")
+            return FakeProcess(exit_after_checks=1)
+
+        result = monitor_command(
+            [
+                "python",
+                "run_stage2_smoke.py",
+                "--mode",
+                "primary",
+                "--output-dir",
+                str(output_root),
+                "--fresh",
+            ],
+            cwd=self.root,
+            events_path=evidence,
+            watched_paths=[output_root],
+            policy=MonitorPolicy(1, 20, 30),
+            clock=FakeClock(),
+            sleep=lambda seconds: None,
+            popen_factory=child_fresh_gate,
+        )
+
+        self.assertEqual(result, 0)
+        self.assertTrue(evidence.is_file())
+        self.assertFalse(output_root.exists())
 
     def test_cli_help_needs_no_ml_dependencies(self):
         result = subprocess.run(
@@ -372,6 +427,39 @@ class Stage2MonitoringTest(unittest.TestCase):
 
         self.assertEqual(result, 0)
         self.assertEqual(received["command"], ["python", "run.py"])
+
+    def test_cli_documents_sibling_evidence_for_fresh_output_command(self):
+        received = {}
+        original_monitor = monitor_stage2_job.monitor_command
+        self.addCleanup(setattr, monitor_stage2_job, "monitor_command", original_monitor)
+        output_root = Path("ties_results/stage2_smoke/local_rtx5080")
+        evidence = Path("ties_results/.stage2_monitor/local_rtx5080.events.jsonl")
+
+        def capture(command, **kwargs):
+            received["command"] = command
+            received["kwargs"] = kwargs
+            return 0
+
+        monitor_stage2_job.monitor_command = capture
+        result = monitor_stage2_job.main(
+            [
+                "--events",
+                str(evidence),
+                "--watch",
+                str(output_root),
+                "--",
+                "python",
+                "run_stage2_smoke.py",
+                "--output-dir",
+                str(output_root),
+                "--fresh",
+            ]
+        )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(received["kwargs"]["events_path"], evidence)
+        self.assertEqual(received["kwargs"]["watched_paths"], [output_root])
+        self.assertNotIn(str(evidence), received["command"])
 
 
 if __name__ == "__main__":

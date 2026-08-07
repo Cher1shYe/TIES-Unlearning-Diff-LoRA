@@ -138,6 +138,13 @@ A generic subprocess monitor wraps local and A100 smoke commands. Production thr
 
 Tests and a monitor drill use accelerated wall-clock thresholds while recording that the production profile remains 300/3,600/43,200 seconds. Only the hard-timeout path terminates automatically.
 
+Monitor evidence is deliberately outside every child `--fresh --output-dir`
+root: use a sibling evidence directory such as
+`ties_results/.stage2_monitor/local_rtx5080.events.jsonl`, while `--watch`
+continues to name the actual smoke output root. This is a required contract for
+the future Task 7 notebook as well: preflight may create the evidence parent,
+but must never create or pollute a fresh child output root.
+
 ### 3.7 Colab A100 transport
 
 A generated Colab notebook is a thin executor, not a second implementation. It:

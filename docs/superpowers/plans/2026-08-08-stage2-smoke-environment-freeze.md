@@ -666,14 +666,14 @@ if "A100" not in gpu:
 
 ```bash
 python -m unittest discover -s tests -v
-python monitor_stage2_job.py --events ties_results/stage2_smoke/colab_a100_run1/monitor_events.jsonl --watch ties_results/stage2_smoke/colab_a100_run1 -- python run_stage2_smoke.py --mode primary --environment colab_a100 --protocol docs/paper_rebuild/FROZEN_EXPERIMENT_PROTOCOL.md --output-dir ties_results/stage2_smoke/colab_a100_run1 --fresh
+python monitor_stage2_job.py --events ties_results/.stage2_monitor/colab_a100_run1.events.jsonl --watch ties_results/stage2_smoke/colab_a100_run1 -- python run_stage2_smoke.py --mode primary --environment colab_a100 --protocol docs/paper_rebuild/FROZEN_EXPERIMENT_PROTOCOL.md --output-dir ties_results/stage2_smoke/colab_a100_run1 --fresh
 python validate_stage2_smoke.py --root ties_results/stage2_smoke/colab_a100_run1 --canonical-dir ties_results/canonical_v1
-python monitor_stage2_job.py --events ties_results/stage2_smoke/colab_a100_repeat_full_sr/monitor_events.jsonl --watch ties_results/stage2_smoke/colab_a100_repeat_full_sr -- python run_stage2_smoke.py --mode repeat_full_sr --environment colab_a100 --protocol docs/paper_rebuild/FROZEN_EXPERIMENT_PROTOCOL.md --output-dir ties_results/stage2_smoke/colab_a100_repeat_full_sr --fresh
+python monitor_stage2_job.py --events ties_results/.stage2_monitor/colab_a100_repeat_full_sr.events.jsonl --watch ties_results/stage2_smoke/colab_a100_repeat_full_sr -- python run_stage2_smoke.py --mode repeat_full_sr --environment colab_a100 --protocol docs/paper_rebuild/FROZEN_EXPERIMENT_PROTOCOL.md --output-dir ties_results/stage2_smoke/colab_a100_repeat_full_sr --fresh
 python validate_stage2_smoke.py --root ties_results/stage2_smoke/colab_a100_run1 --canonical-dir ties_results/canonical_v1 --compare-repeat ties_results/stage2_smoke/colab_a100_repeat_full_sr
 python freeze_stage2_environment.py --protocol docs/paper_rebuild/FROZEN_EXPERIMENT_PROTOCOL.md --smoke-root ties_results/stage2_smoke/colab_a100_run1 --source-archive /content/stage2_source.zip --commands ties_results/stage2_smoke/colab_a100_run1/commands.json --output-dir ties_results/stage2_smoke/freeze_bundle --fresh
 ```
 
-Before these commands, the notebook extracts `stage2_source.zip`, verifies `stage2_source.bundle` against `source_metadata.json`, clones the bundle, checks out the recorded commit, and asserts `git status --porcelain` is empty.
+Before these commands, the notebook extracts `stage2_source.zip`, verifies `stage2_source.bundle` against `source_metadata.json`, clones the bundle, checks out the recorded commit, and asserts `git status --porcelain` is empty. The notebook must keep `--events` in the sibling `ties_results/.stage2_monitor/` directory; it must never place monitor evidence inside a child `--fresh --output-dir` root.
 
 The export cell excludes `*.pt` model files but includes checkpoint SHA-256 metadata, configs, manifests, metrics, predictions, logs, validation outputs, monitor events, and the freeze bundle.
 
@@ -755,7 +755,7 @@ Expected: all tests pass. A failure stops Stage 2 for diagnosis; do not run the 
 Run:
 
 ```powershell
-.venv-stage2\Scripts\python.exe monitor_stage2_job.py --events ties_results/stage2_smoke/local_rtx5080/monitor_events.jsonl --watch ties_results/stage2_smoke/local_rtx5080 -- .venv-stage2\Scripts\python.exe run_stage2_smoke.py --mode primary --environment local_rtx5080 --protocol docs/paper_rebuild/FROZEN_EXPERIMENT_PROTOCOL.md --output-dir ties_results/stage2_smoke/local_rtx5080 --fresh
+.venv-stage2\Scripts\python.exe monitor_stage2_job.py --events ties_results/.stage2_monitor/local_rtx5080.events.jsonl --watch ties_results/stage2_smoke/local_rtx5080 -- .venv-stage2\Scripts\python.exe run_stage2_smoke.py --mode primary --environment local_rtx5080 --protocol docs/paper_rebuild/FROZEN_EXPERIMENT_PROTOCOL.md --output-dir ties_results/stage2_smoke/local_rtx5080 --fresh
 ```
 
 Expected: exit 0; one shared checkpoint and three method statuses are success.
