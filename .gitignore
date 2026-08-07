@@ -15,6 +15,7 @@ env/
 
 # Project specific outputs (adjust if your output folder has a different name)
 ties_unlearn_results/
+ties_results/canonical_v1/
 
 # Downloaded result archives (redundant with the extracted ties_results/ tree)
 *.zip
