@@ -252,6 +252,11 @@ class RealCanonicalBackendContractTest(unittest.TestCase):
                 }
 
             dataloader_stub.make_hans_split_manifest = fake_hans_manifest
+            raw_ood = [{"id": "ood-1"}]
+            dataloader_stub.load_esnli_raw = lambda: raw_ood
+            dataloader_stub.load_anli_raw = lambda: raw_ood
+            dataloader_stub.load_snli_hard_raw = lambda: raw_ood
+            dataloader_stub.load_wanli_raw = lambda: raw_ood
             with patch.dict(
                 sys.modules,
                 {"datasets": datasets_stub, "data.dataloader": dataloader_stub},

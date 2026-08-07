@@ -74,7 +74,8 @@ def _load_hans_dataset(split: str = "eval"):
         hans = load_dataset("csv", data_files=f"./{fname}", delimiter="\t", split="train")
     return hans
 
-def _load_esnli_dataset():
+def load_esnli_raw():
+    """Return valid e-SNLI test records before any tokenization."""
     esnli_url = "https://raw.githubusercontent.com/OanaMariaCamburu/e-SNLI/refs/heads/master/dataset/esnli_test.csv"
 
     # 1. Pull the raw text file directly over the network
@@ -88,7 +89,11 @@ def _load_esnli_dataset():
     data_list = [row for row in reader]
 
     # 4. Wrap it straight back into a Hugging Face Dataset format
-    return Dataset.from_list(data_list)
+    return Dataset.from_list(data_list).filter(
+        lambda ex: ex.get("gold_label") in {"entailment", "neutral", "contradiction"}
+        and ex.get("Sentence1") is not None
+        and ex.get("Sentence2") is not None
+    )
 
 def _hans_train_partitions(cfg: TrainConfig):
     hans = _load_hans_dataset("train")
@@ -154,14 +159,13 @@ def _prepare_hans_analysis_base(cfg: TrainConfig) -> Dataset:
     return hans.filter(lambda ex: ex["label"] in (0, 1))
 
 def _prepare_esnli_test_dataset(cfg: TrainConfig, tok) -> Dataset:
-    esnli = _load_esnli_dataset()
+    esnli = load_esnli_raw()
     label_map = {"entailment": 0, "neutral": 1, "contradiction": 2}
     esnli = esnli.map(lambda ex: {"label": label_map.get(ex["gold_label"], -1)})
     if "Sentence1" in esnli.column_names:
         esnli = esnli.rename_column("Sentence1", "premise")
     if "Sentence2" in esnli.column_names:
         esnli = esnli.rename_column("Sentence2", "hypothesis")
-    esnli = esnli.filter(lambda ex: ex["label"] in (0, 1, 2) and ex["premise"] is not None and ex["hypothesis"] is not None)
     esnli = _cap_final_evaluation_dataset(
         esnli,
         cfg.esnli_eval_size,
@@ -230,11 +234,15 @@ def make_hans_evaluation_loader(cfg: TrainConfig, tok):
 def make_hans_split_manifest(cfg: TrainConfig):
     _, _, split = _hans_train_partitions(cfg)
     evaluation = _load_hans_dataset("eval")
-    evaluation_ids = [str(evaluation[index]["pairID"]) for index in range(len(evaluation))]
+    evaluation_records = [dict(evaluation[index]) for index in range(len(evaluation))]
+    evaluation_ids = [str(record["pairID"]) for record in evaluation_records]
     validate_hans_disjointness(split.build_pair_ids, split.dev_pair_ids, evaluation_ids)
     manifest = split.manifest()
     manifest["evaluation_count"] = len(evaluation_ids)
     manifest["evaluation_pair_ids"] = evaluation_ids
+    # The backend consumes these raw, un-tokenized records only to reproduce
+    # the stratified evaluation identity selection; it never persists them.
+    manifest["evaluation_records"] = evaluation_records
     return manifest
 
 def make_esnli_test_loader(cfg: TrainConfig, tok):
@@ -245,15 +253,23 @@ def make_esnli_test_loader(cfg: TrainConfig, tok):
 
     return DataLoader(test_ds, batch_size=cfg.batch_size, shuffle=False)
 
+def load_anli_raw():
+    """Return valid concatenated ANLI test rounds before tokenization."""
+    ds = load_dataset("facebook/anli")
+    anli = concatenate_datasets([ds["test_r1"], ds["test_r2"], ds["test_r3"]])
+    return anli.filter(
+        lambda ex: ex["label"] in (0, 1, 2)
+        and ex["premise"] is not None
+        and ex["hypothesis"] is not None
+    )
+
+
 def _prepare_anli_test_dataset(cfg: TrainConfig, tok) -> Dataset:
     # Adversarial NLI (Nie et al., 2020). A held-out OOD/adversarial benchmark the
     # method never touches during training or layer localization. The three test
     # rounds (R1/R2/R3) are concatenated into one test set. ANLI labels already use
     # the MNLI mapping (0=entailment, 1=neutral, 2=contradiction).
-    ds = load_dataset("facebook/anli")
-    anli = concatenate_datasets([ds["test_r1"], ds["test_r2"], ds["test_r3"]])
-    anli = anli.filter(lambda ex: ex["label"] in (0, 1, 2)
-                       and ex["premise"] is not None and ex["hypothesis"] is not None)
+    anli = load_anli_raw()
     anli = _cap_final_evaluation_dataset(
         anli,
         cfg.anli_eval_size,
@@ -275,25 +291,28 @@ def make_anli_test_loader(cfg: TrainConfig, tok):
     test_ds.set_format(type="torch", columns=cols)
     return DataLoader(test_ds, batch_size=cfg.batch_size, shuffle=False)
 
-def _load_snli_hard_dataset():
+def load_snli_hard_raw():
+    """Return valid SNLI-hard records before tokenization."""
     # SNLI-hard test set (Gururangan et al., 2018): the SNLI test subset that a
     # hypothesis-only model gets wrong — a held-out shortcut stress test.
     url = "https://nlp.stanford.edu/projects/snli/snli_1.0_test_hard.jsonl"
     with urllib.request.urlopen(url) as response:
         lines = [line.decode("utf-8") for line in response.readlines()]
     data_list = [json.loads(line) for line in lines if line.strip()]
-    return Dataset.from_list(data_list)
+    return Dataset.from_list(data_list).filter(
+        lambda ex: ex.get("gold_label") in {"entailment", "neutral", "contradiction"}
+        and ex.get("sentence1") is not None
+        and ex.get("sentence2") is not None
+    )
 
 def _prepare_snli_hard_test_dataset(cfg: TrainConfig, tok) -> Dataset:
-    snli = _load_snli_hard_dataset()
+    snli = load_snli_hard_raw()
     label_map = {"entailment": 0, "neutral": 1, "contradiction": 2}
     snli = snli.map(lambda ex: {"label": label_map.get(ex["gold_label"], -1)})
     if "sentence1" in snli.column_names:
         snli = snli.rename_column("sentence1", "premise")
     if "sentence2" in snli.column_names:
         snli = snli.rename_column("sentence2", "hypothesis")
-    snli = snli.filter(lambda ex: ex["label"] in (0, 1, 2)
-                       and ex["premise"] is not None and ex["hypothesis"] is not None)
     snli = _cap_final_evaluation_dataset(
         snli,
         cfg.snli_hard_eval_size,
@@ -315,13 +334,28 @@ def make_snli_hard_test_loader(cfg: TrainConfig, tok):
     test_ds.set_format(type="torch", columns=cols)
     return DataLoader(test_ds, batch_size=cfg.batch_size, shuffle=False)
 
+def load_wanli_raw():
+    """Return valid WANLI test records before tokenization."""
+    ds = load_dataset("alisawuffles/WANLI")
+    wanli = ds["test"]
+    valid_strings = {"entailment", "neutral", "contradiction"}
+    return wanli.filter(
+        lambda ex: (
+            str(ex.get("gold")).lower() in valid_strings
+            if ex.get("gold") is not None
+            else ex.get("label") in (0, 1, 2)
+        )
+        and ex.get("premise") is not None
+        and ex.get("hypothesis") is not None
+    )
+
+
 def _prepare_wanli_test_dataset(cfg: TrainConfig, tok) -> Dataset:
     # WANLI (Liu et al., 2022): worker-and-AI collaborative NLI with harder, more naturally
     # adversarial examples than MNLI. A held-out OOD generalization benchmark the method
     # never sees during training or layer localization. Uses the MNLI label mapping
     # (0=entailment, 1=neutral, 2=contradiction).
-    ds = load_dataset("alisawuffles/WANLI")
-    wanli = ds["test"]
+    wanli = load_wanli_raw()
     label_map = {"entailment": 0, "neutral": 1, "contradiction": 2}
 
     def _norm_label(ex):
@@ -331,8 +365,6 @@ def _prepare_wanli_test_dataset(cfg: TrainConfig, tok) -> Dataset:
         return {"label": int(ex["label"]) if ex.get("label") is not None else -1}
 
     wanli = wanli.map(_norm_label)
-    wanli = wanli.filter(lambda ex: ex["label"] in (0, 1, 2)
-                         and ex["premise"] is not None and ex["hypothesis"] is not None)
     wanli = _cap_final_evaluation_dataset(
         wanli,
         cfg.wanli_eval_size,

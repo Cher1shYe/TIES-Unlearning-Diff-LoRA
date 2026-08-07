@@ -21,6 +21,7 @@ from canonical.access_audit import (
 from canonical.artifacts import read_jsonl, sha256_file, write_json, write_jsonl
 from canonical.backend import RealCanonicalBackend
 from canonical.data import deterministic_cap_records, stable_record_id
+from canonical.data_manifest import dataset_identity_entry
 from canonical.runner import CheckpointRef, run_core
 from configs.config import TrainConfig
 
@@ -36,6 +37,12 @@ HANS_ROWS = [
     }
     for label in ("entailment", "non-entailment")
     for heuristic in ("lexical_overlap", "subsequence", "constituent")
+    for index in range(4)
+]
+
+
+MANIFEST_ROWS = [
+    {"uid": f"fixture-{index}", "premise": f"premise-{index}", "hypothesis": f"hypothesis-{index}"}
     for index in range(4)
 ]
 
@@ -81,6 +88,163 @@ class DeterministicEvaluationSelectionTest(unittest.TestCase):
         self.assertEqual(ids, [stable_record_id(row) for row in selected])
         self.assertEqual(selected, deterministic_cap_records(list(reversed(rows)), 4, 42)[0])
         self.assertTrue(all(selected_row is not source_row for selected_row in selected for source_row in rows if selected_row == source_row))
+
+
+class DataIdentityManifestTest(unittest.TestCase):
+    def test_identity_entry_separates_full_and_smoke_selected_membership(self):
+        entry = dataset_identity_entry(
+            MANIFEST_ROWS,
+            source="fixture",
+            split="test",
+            preferred_id_fields=("uid",),
+            selected_limit=2,
+            seed=42,
+        )
+
+        self.assertEqual(4, entry["full_count"])
+        self.assertEqual(2, entry["selected_count"])
+        self.assertEqual(["fixture-0", "fixture-1", "fixture-2", "fixture-3"], entry["full_ids"])
+        self.assertTrue(set(entry["selected_ids"]).issubset(set(entry["full_ids"])))
+        self.assertEqual(64, len(entry["full_ids_sha256"]))
+        self.assertEqual(64, len(entry["selected_ids_sha256"]))
+        self.assertEqual("preferred_field_or_content_sha256", entry["id_strategy"])
+        self.assertEqual("fixture", entry["source"])
+        self.assertEqual("test", entry["split"])
+        self.assertEqual(42, entry["selection_seed"])
+        self.assertEqual(2, entry["selected_limit"])
+
+    def test_identity_entry_rejects_empty_duplicate_and_out_of_range_membership(self):
+        kwargs = {
+            "source": "fixture",
+            "split": "test",
+            "preferred_id_fields": ("uid",),
+            "seed": 42,
+        }
+        with self.assertRaisesRegex(ValueError, "empty"):
+            dataset_identity_entry([], selected_limit=None, **kwargs)
+        with self.assertRaisesRegex(ValueError, "duplicate"):
+            dataset_identity_entry([{"uid": "same"}, {"uid": "same"}], selected_limit=None, **kwargs)
+        with self.assertRaisesRegex(ValueError, "selected"):
+            dataset_identity_entry(MANIFEST_ROWS, selected_limit=5, **kwargs)
+
+    def test_identity_entry_accepts_actual_selection_smaller_than_a_cap(self):
+        entry = dataset_identity_entry(
+            MANIFEST_ROWS,
+            source="fixture",
+            split="test",
+            preferred_id_fields=("uid",),
+            selected_limit=5,
+            selected_records=MANIFEST_ROWS,
+            seed=42,
+        )
+
+        self.assertEqual(4, entry["selected_count"])
+
+    def test_ood_raw_loader_interfaces_are_public_without_network_access(self):
+        dataloader = StructuredDataAccessAuditTest._dataloader_module_with_dependency_stubs()
+
+        for name in (
+            "load_esnli_raw",
+            "load_anli_raw",
+            "load_snli_hard_raw",
+            "load_wanli_raw",
+        ):
+            self.assertTrue(callable(getattr(dataloader, name)))
+
+    def test_backend_writes_v2_groups_without_network_when_loaders_are_injected(self):
+        class FixtureRows:
+            def __init__(self, rows):
+                self.rows = [dict(row) for row in rows]
+
+            def __len__(self):
+                return len(self.rows)
+
+            def __iter__(self):
+                return iter(self.rows)
+
+            def __getitem__(self, index):
+                return self.rows[index]
+
+            def shuffle(self, seed):
+                del seed
+                return self
+
+            def select(self, indexes):
+                return FixtureRows([self.rows[index] for index in indexes])
+
+        mnli = {
+            "train": FixtureRows([{"idx": f"train-{index}"} for index in range(4)]),
+            "validation_matched": FixtureRows([{"idx": f"validation-{index}"} for index in range(4)]),
+        }
+        hans_manifest = {
+            "build_pair_ids": ["build-1"],
+            "dev_pair_ids": ["dev-1"],
+            "evaluation_pair_ids": ["eval-1", "eval-2", "eval-3", "eval-4"],
+            "evaluation_records": [
+                {
+                    "pairID": f"eval-{index}",
+                    "gold_label": label,
+                    "heuristic": heuristic,
+                    "subcase": f"{heuristic}-case",
+                }
+                for index, (label, heuristic) in enumerate(
+                    (
+                        ("entailment", "lexical_overlap"),
+                        ("non-entailment", "lexical_overlap"),
+                        ("entailment", "subsequence"),
+                        ("non-entailment", "constituent"),
+                    ),
+                    start=1,
+                )
+            ],
+        }
+        raw_ood = FixtureRows(MANIFEST_ROWS)
+        fake_datasets = types.ModuleType("datasets")
+        fake_datasets.load_dataset = lambda *_args, **_kwargs: mnli
+        fake_dataloader = types.ModuleType("data.dataloader")
+        fake_dataloader.make_hans_split_manifest = lambda _cfg: hans_manifest
+        fake_dataloader.load_esnli_raw = lambda: raw_ood
+        fake_dataloader.load_anli_raw = lambda: raw_ood
+        fake_dataloader.load_snli_hard_raw = lambda: raw_ood
+        fake_dataloader.load_wanli_raw = lambda: raw_ood
+
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            sys.modules, {"datasets": fake_datasets, "data.dataloader": fake_dataloader}
+        ):
+            backend = RealCanonicalBackend(
+                TrainConfig(
+                    output_dir=str(Path(tmp) / "unused"),
+                    mnli_train_size=2,
+                    mnli_val_size=2,
+                    hans_eval_size=2,
+                    esnli_eval_size=1,
+                    anli_eval_size=1,
+                    snli_hard_eval_size=1,
+                    wanli_eval_size=1,
+                )
+            )
+            output = Path(tmp) / "out"
+            backend.initialize_manifests(output, Path(tmp) / "protocol.md")
+
+            manifest = json.loads((output / "manifests" / "data_manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual("canonical_data_manifest_v2", manifest["schema_version"])
+            self.assertEqual("stage2_smoke", manifest["scope"])
+            self.assertEqual({"train", "validation_matched"}, set(manifest["mnli"]))
+            self.assertEqual({"build", "dev", "evaluation"}, set(manifest["hans"]))
+            self.assertEqual({"esnli", "anli", "snli_hard", "wanli"}, set(manifest["ood"]))
+            self.assertEqual(4, manifest["mnli"]["train"]["full_count"])
+            self.assertEqual(2, manifest["mnli"]["train"]["selected_count"])
+            expected_hans_entry = dataset_identity_entry(
+                hans_manifest["evaluation_records"],
+                source="tommccoy1/hans",
+                split="evaluation",
+                preferred_id_fields=("pairID",),
+                selected_limit=2,
+                seed=42,
+                strata_fields=("gold_label", "heuristic", "subcase"),
+            )
+            self.assertEqual(expected_hans_entry["selected_ids"], manifest["hans"]["evaluation"]["selected_ids"])
+            self.assertEqual("manifest_identity_only", read_jsonl(output / "manifests" / "data_access.jsonl")[0]["purpose"])
 
 
 class StructuredDataAccessAuditTest(unittest.TestCase):

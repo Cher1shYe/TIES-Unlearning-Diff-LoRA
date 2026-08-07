@@ -2,8 +2,6 @@
 
 from copy import deepcopy
 from dataclasses import asdict
-from hashlib import sha256
-import json
 from pathlib import Path
 import subprocess
 import sys
@@ -11,28 +9,15 @@ from typing import Any, Mapping
 
 from canonical.artifacts import (
     collect_environment_metadata,
-    json_ready,
     sha256_file,
     write_json,
 )
 from canonical.access_audit import append_access_event
 from canonical.conditions import CanonicalCondition
-from canonical.data import dataset_row_ids, sample_dataset
+from canonical.data import sample_dataset
+from canonical.data_manifest import dataset_identity_entry
 from canonical.runner import CheckpointRef
 from configs.config import TrainConfig
-
-
-def _json_checksum(value: Any) -> str:
-    normalized = json_ready(value)
-    payload = json.dumps(
-        normalized,
-        ensure_ascii=False,
-        allow_nan=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return sha256(payload).hexdigest()
-
 
 def _peak_gpu_memory_bytes() -> int | None:
     try:
@@ -107,16 +92,17 @@ class RealCanonicalBackend:
         from data.dataloader import make_hans_split_manifest
 
         mnli = load_dataset("nyu-mll/glue", "mnli")
-        train = sample_dataset(
+        canonical_config = TrainConfig()
+        train = sample_dataset(mnli["train"], canonical_config.mnli_train_size, 42)
+        validation = sample_dataset(mnli["validation_matched"], canonical_config.mnli_val_size, 42)
+        selected_train = sample_dataset(
             mnli["train"], self.base_config.mnli_train_size, self.base_config.data_seed
         )
-        validation = sample_dataset(
-            mnli["validation_matched"],
-            self.base_config.mnli_val_size,
-            self.base_config.data_seed,
+        selected_validation = sample_dataset(
+            mnli["validation_matched"], self.base_config.mnli_val_size, self.base_config.data_seed
         )
-        train_ids = dataset_row_ids(train)
-        validation_ids = dataset_row_ids(validation)
+        # This remains before any official HANS read.  The summary event below
+        # binds the completed identity collection to counts and checksums.
         append_access_event(
             manifests / "data_access.jsonl",
             dataset="hans",
@@ -125,23 +111,97 @@ class RealCanonicalBackend:
             event="dataset_access",
         )
         hans = make_hans_split_manifest(self.base_config)
+        hans_records = {
+            "build": [{"pairID": pair_id} for pair_id in hans["build_pair_ids"]],
+            "dev": [{"pairID": pair_id} for pair_id in hans["dev_pair_ids"]],
+            "evaluation": [
+                dict(record)
+                for record in hans.get(
+                    "evaluation_records",
+                    [{"pairID": pair_id} for pair_id in hans["evaluation_pair_ids"]],
+                )
+            ],
+        }
+        hans_entries = {
+            name: dataset_identity_entry(
+                hans_records[name],
+                source="tommccoy1/hans",
+                split=name,
+                preferred_id_fields=("pairID",),
+                selected_limit=(self.base_config.hans_eval_size if name == "evaluation" else None),
+                seed=self.base_config.data_seed,
+                strata_fields=("gold_label", "heuristic", "subcase") if name == "evaluation" else (),
+            )
+            for name in ("build", "dev", "evaluation")
+        }
+        from data.dataloader import (
+            load_anli_raw,
+            load_esnli_raw,
+            load_snli_hard_raw,
+            load_wanli_raw,
+        )
+
+        ood_specs = {
+            "esnli": (load_esnli_raw, self.base_config.esnli_eval_size, "e-SNLI", ("pairID", "uid", "id", "idx")),
+            "anli": (load_anli_raw, self.base_config.anli_eval_size, "facebook/anli", ("pairID", "uid", "id", "idx")),
+            "snli_hard": (load_snli_hard_raw, self.base_config.snli_hard_eval_size, "snli_1.0_test_hard", ("pairID", "uid", "id", "idx")),
+            "wanli": (load_wanli_raw, self.base_config.wanli_eval_size, "alisawuffles/WANLI", ("pairID", "uid", "id", "idx")),
+        }
+        ood_entries = {
+            name: dataset_identity_entry(
+                records,
+                source=source,
+                split="test",
+                preferred_id_fields=preferred_fields,
+                selected_limit=limit,
+                seed=self.base_config.data_seed,
+            )
+            for name, (loader, limit, source, preferred_fields) in ood_specs.items()
+            for records in (loader(),)
+        }
+        append_access_event(
+            manifests / "data_access.jsonl",
+            dataset="hans",
+            split="evaluation",
+            purpose="manifest_identity_only",
+            event="manifest_identity_summary",
+            identity_counts={name: entry["full_count"] for name, entry in hans_entries.items()},
+            identity_checksums={name: entry["full_ids_sha256"] for name, entry in hans_entries.items()},
+        )
+        smoke_caps = (
+            self.base_config.hans_eval_size,
+            self.base_config.esnli_eval_size,
+            self.base_config.anli_eval_size,
+            self.base_config.snli_hard_eval_size,
+            self.base_config.wanli_eval_size,
+        )
         data_manifest = {
-            "schema_version": "canonical_data_manifest_v1",
+            "schema_version": "canonical_data_manifest_v2",
+            "scope": "stage2_smoke" if any(cap is not None for cap in smoke_caps) else "canonical_v1",
             "data_seed": 42,
             "hans_split_seed": 42,
             "mnli": {
-                "dataset": "nyu-mll/glue",
-                "configuration": "mnli",
-                "train_split": "train",
-                "validation_split": "validation_matched",
-                "train_row_ids": train_ids,
-                "validation_row_ids": validation_ids,
-                "train_row_ids_sha256": _json_checksum(train_ids),
-                "validation_row_ids_sha256": _json_checksum(validation_ids),
-                "train_count": len(train_ids),
-                "validation_count": len(validation_ids),
+                "train": dataset_identity_entry(
+                    train,
+                    source="nyu-mll/glue:mnli",
+                    split="train",
+                    preferred_id_fields=("idx", "row_id", "id", "uid"),
+                    selected_limit=self.base_config.mnli_train_size,
+                    seed=self.base_config.data_seed,
+                    selected_records=selected_train,
+                ),
+                "validation_matched": dataset_identity_entry(
+                    validation,
+                    source="nyu-mll/glue:mnli",
+                    split="validation_matched",
+                    preferred_id_fields=("idx", "row_id", "id", "uid"),
+                    selected_limit=self.base_config.mnli_val_size,
+                    seed=self.base_config.data_seed,
+                    selected_records=selected_validation,
+                ),
             },
-            "hans": hans,
+            "hans": hans_entries,
+            "ood": ood_entries,
         }
         write_json(manifests / "data_manifest.json", data_manifest)
 
