@@ -171,6 +171,18 @@ class CanonicalRunnerContractTest(unittest.TestCase):
                 self._run(protocol, output, backend, fresh=True, seeds=(42,))
             self.assertEqual(0, backend.initialize_calls)
 
+    def test_run_core_fresh_rejects_root_commands_provenance_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            protocol, output = self._inputs(tmp)
+            output.mkdir()
+            write_json(output / "commands.json", {"mode": "primary"})
+            backend = FakeBackend()
+
+            with self.assertRaisesRegex(ValueError, "empty output directory"):
+                self._run(protocol, output, backend, fresh=True, seeds=(42,))
+
+            self.assertEqual(0, backend.initialize_calls)
+
     def test_failed_shared_preparation_stops_seed(self):
         with tempfile.TemporaryDirectory() as tmp:
             protocol, output = self._inputs(tmp)

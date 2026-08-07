@@ -85,13 +85,9 @@ def _assert_clean_git(metadata: Mapping[str, Any]) -> None:
         raise ValueError("Canonical execution requires a recorded Git commit.")
 
 
-def _prepare_output_directory(
-    output_dir: Path, fresh: bool, *, allowed_existing_entries: Sequence[str] = ()
-) -> None:
+def _prepare_output_directory(output_dir: Path, fresh: bool) -> None:
     if fresh:
-        allowed = set(allowed_existing_entries)
-        existing = tuple(output_dir.iterdir()) if output_dir.exists() else ()
-        if any(entry.name not in allowed for entry in existing):
+        if output_dir.exists() and any(output_dir.iterdir()):
             raise ValueError("--fresh requires a new or empty output directory")
         output_dir.mkdir(parents=True, exist_ok=True)
         return
@@ -166,6 +162,60 @@ def _validated_condition_tags(condition_tags: Sequence[str]) -> tuple[str, ...]:
     if len(set(tags)) != len(tags):
         raise ValueError("Canonical condition matrix must not repeat condition tags.")
     return tags
+
+
+_SMOKE_COMMANDS_REQUIRED_KEYS = (
+    "schema_version",
+    "mode",
+    "environment",
+    "argv",
+    "expected_condition_tags",
+    "profile_name",
+    "gpu_name",
+    "started_at",
+)
+_SMOKE_COMMANDS_MATCH_KEYS = (
+    "schema_version",
+    "mode",
+    "environment",
+    "expected_condition_tags",
+    "profile_name",
+    "gpu_name",
+)
+
+
+def _validate_smoke_commands_record(record: Mapping[str, Any]) -> None:
+    missing = [key for key in _SMOKE_COMMANDS_REQUIRED_KEYS if key not in record]
+    if missing:
+        raise ValueError(f"Stage 2 smoke commands.json is missing required fields: {missing}")
+    if not all(isinstance(record[key], str) and record[key] for key in (
+        "schema_version", "mode", "environment", "profile_name", "gpu_name", "started_at"
+    )):
+        raise ValueError("Stage 2 smoke commands.json has invalid string fields.")
+    if not isinstance(record["argv"], list) or not record["argv"] or not all(
+        isinstance(value, str) for value in record["argv"]
+    ):
+        raise ValueError("Stage 2 smoke commands.json must record a non-empty argv list.")
+    if not isinstance(record["expected_condition_tags"], list) or not all(
+        isinstance(value, str) for value in record["expected_condition_tags"]
+    ):
+        raise ValueError("Stage 2 smoke commands.json has invalid condition tags.")
+
+
+def _write_or_validate_smoke_commands(
+    output_dir: Path, commands: Mapping[str, Any], fresh: bool
+) -> None:
+    _validate_smoke_commands_record(commands)
+    path = output_dir / "commands.json"
+    if fresh:
+        write_json(path, commands)
+        return
+    if not path.is_file():
+        raise ValueError("Stage 2 smoke resume requires immutable root commands.json.")
+    recorded = _read_json(path)
+    _validate_smoke_commands_record(recorded)
+    if any(recorded[key] != commands[key] for key in _SMOKE_COMMANDS_MATCH_KEYS):
+        raise ValueError("Stage 2 smoke commands provenance differs from the original run.")
 
 
 def _artifact_hashes(base_dir: Path, relative_paths: Iterable[str]) -> dict[str, str]:
@@ -414,6 +464,7 @@ def run_condition_matrix(
     git_metadata: Mapping[str, Any] | None = None,
     command: Sequence[str] | None = None,
     repo_root: os.PathLike[str] | str = ".",
+    smoke_commands: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Execute or resume a validated subset of the frozen condition matrix."""
     protocol_path = Path(protocol_path).resolve()
@@ -424,22 +475,17 @@ def run_condition_matrix(
         rotated_condition_order(seed)
     git_info = dict(git_metadata or collect_git_metadata(repo_root))
     _assert_clean_git(git_info)
-    _prepare_output_directory(
-        output_dir,
-        fresh,
-        allowed_existing_entries=("commands.json",)
-        if fresh and (output_dir / "commands.json").is_file()
-        else (),
-    )
+    _prepare_output_directory(output_dir, fresh)
     protocol_hash = _write_or_validate_protocol_snapshot(protocol_path, output_dir, fresh)
+    invocation = tuple(command or sys.argv)
+    if smoke_commands is not None:
+        _write_or_validate_smoke_commands(output_dir, smoke_commands, fresh)
     if fresh:
         backend.initialize_manifests(output_dir, protocol_path)
     manifest_hashes = _validate_manifests(output_dir)
     _write_or_validate_run_matrix(
         output_dir, seeds_tuple, tags_tuple, matrix_schema_version, fresh
     )
-    invocation = tuple(command or sys.argv)
-
     executed = []
     skipped = []
     for training_seed in seeds_tuple:

@@ -28,6 +28,16 @@ CLEAN_GIT = {
     "dirty": False,
     "status_porcelain": [],
 }
+SMOKE_COMMAND = {
+    "schema_version": "stage2_smoke_commands_v1",
+    "mode": "primary",
+    "environment": "local_rtx5080",
+    "argv": ["python", "run_stage2_smoke.py", "--mode", "primary"],
+    "expected_condition_tags": list(PRIMARY_CONDITIONS),
+    "profile_name": SMOKE_PROFILE_NAME,
+    "gpu_name": "NVIDIA GeForce RTX 5080",
+    "started_at": "2026-08-08T00:00:00+00:00",
+}
 
 
 class MatrixFakeBackend:
@@ -53,7 +63,12 @@ class MatrixFakeBackend:
         checkpoint_hash = sha256_file(checkpoint)
         write_json(
             shared_dir / "shared_checkpoint_metadata.json",
-            {"checkpoint_sha256": checkpoint_hash, "class_prior_weights": {"0": 0.1}},
+            {
+                "checkpoint_role": "canonical_shared_phase2",
+                "checkpoint_path": str(checkpoint),
+                "checkpoint_sha256": checkpoint_hash,
+                "class_prior_weights": {"0": 0.1, "1": 0.2, "2": 0.3},
+            },
         )
         write_jsonl(shared_dir / "data_access.jsonl", [])
         return CheckpointRef(checkpoint, checkpoint_hash)
@@ -76,6 +91,25 @@ class MatrixFakeBackend:
 
 
 class Stage2SmokeProfileTest(unittest.TestCase):
+    def _inputs(self, root):
+        protocol = Path(root) / "FROZEN_EXPERIMENT_PROTOCOL.md"
+        protocol.write_text("# frozen\n", encoding="utf-8")
+        return protocol, Path(root) / "stage2_smoke"
+
+    def _run_smoke_matrix(self, protocol, output, backend, *, fresh, commands):
+        return run_condition_matrix(
+            protocol,
+            output,
+            backend,
+            fresh=fresh,
+            seeds=(42,),
+            condition_tags=PRIMARY_CONDITIONS,
+            matrix_schema_version="stage2_smoke_matrix_v1",
+            git_metadata=CLEAN_GIT,
+            command=SMOKE_COMMAND["argv"],
+            smoke_commands=commands,
+        )
+
     def test_profile_has_exact_frozen_budget_without_changing_core_defaults(self):
         core = TrainConfig()
         smoke = build_smoke_config(Path("out"))
@@ -113,21 +147,11 @@ class Stage2SmokeProfileTest(unittest.TestCase):
 
     def test_stage2_primary_executes_only_three_methods_and_one_shared_prepare(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            protocol = root / "FROZEN_EXPERIMENT_PROTOCOL.md"
-            protocol.write_text("# frozen\n", encoding="utf-8")
-            output = root / "stage2_smoke"
+            protocol, output = self._inputs(tmp)
             backend = MatrixFakeBackend()
 
-            result = run_condition_matrix(
-                protocol,
-                output,
-                backend,
-                fresh=True,
-                seeds=(42,),
-                condition_tags=PRIMARY_CONDITIONS,
-                matrix_schema_version="stage2_smoke_matrix_v1",
-                git_metadata=CLEAN_GIT,
+            result = self._run_smoke_matrix(
+                protocol, output, backend, fresh=True, commands=SMOKE_COMMAND
             )
 
             self.assertEqual(backend.prepared, [42])
@@ -138,6 +162,71 @@ class Stage2SmokeProfileTest(unittest.TestCase):
             matrix = json.loads((output / "manifests" / "run_matrix.json").read_text(encoding="utf-8"))
             self.assertEqual("stage2_smoke_matrix_v1", matrix["schema_version"])
             self.assertEqual(list(PRIMARY_CONDITIONS), matrix["condition_orders"]["42"])
+            metadata = json.loads(
+                (output / "seed_42" / "shared_phase2" / "shared_checkpoint_metadata.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual("canonical_shared_phase2", metadata["checkpoint_role"])
+            self.assertEqual(
+                str(output / "seed_42" / "shared_phase2" / "checkpoints" / "shared.pt"),
+                metadata["checkpoint_path"],
+            )
+            self.assertEqual({"0", "1", "2"}, set(metadata["class_prior_weights"]))
+            branches = [checkpoint for _, _, checkpoint in backend.methods if checkpoint is not None]
+            self.assertEqual(2, len(branches))
+            self.assertEqual({branches[0].path}, {checkpoint.path for checkpoint in branches})
+            self.assertEqual({branches[0].sha256}, {checkpoint.sha256 for checkpoint in branches})
+            self.assertEqual(Path(metadata["checkpoint_path"]), branches[0].path)
+            self.assertEqual(metadata["checkpoint_sha256"], branches[0].sha256)
+
+    def test_smoke_resume_rejects_missing_commands_provenance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            protocol, output = self._inputs(tmp)
+            self._run_smoke_matrix(
+                protocol, output, MatrixFakeBackend(), fresh=True, commands=SMOKE_COMMAND
+            )
+            (output / "commands.json").unlink()
+
+            with self.assertRaisesRegex(ValueError, "commands.json"):
+                self._run_smoke_matrix(
+                    protocol, output, MatrixFakeBackend(), fresh=False, commands=SMOKE_COMMAND
+                )
+
+            self.assertFalse((output / "commands.json").exists())
+
+    def test_smoke_resume_rejects_mismatched_commands_without_replacing_them(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            protocol, output = self._inputs(tmp)
+            self._run_smoke_matrix(
+                protocol, output, MatrixFakeBackend(), fresh=True, commands=SMOKE_COMMAND
+            )
+            commands_path = output / "commands.json"
+            original = commands_path.read_bytes()
+            mismatched = {**SMOKE_COMMAND, "mode": "repeat_full_sr"}
+
+            with self.assertRaisesRegex(ValueError, "provenance differs"):
+                self._run_smoke_matrix(
+                    protocol, output, MatrixFakeBackend(), fresh=False, commands=mismatched
+                )
+
+            self.assertEqual(original, commands_path.read_bytes())
+
+    def test_smoke_resume_preserves_matching_commands_provenance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            protocol, output = self._inputs(tmp)
+            self._run_smoke_matrix(
+                protocol, output, MatrixFakeBackend(), fresh=True, commands=SMOKE_COMMAND
+            )
+            commands_path = output / "commands.json"
+            original = commands_path.read_bytes()
+
+            result = self._run_smoke_matrix(
+                protocol, output, MatrixFakeBackend(), fresh=False, commands=SMOKE_COMMAND
+            )
+
+            self.assertEqual([], result["executed"])
+            self.assertEqual(original, commands_path.read_bytes())
 
     def test_stage2_smoke_help_does_not_need_ml_dependencies(self):
         result = subprocess.run(

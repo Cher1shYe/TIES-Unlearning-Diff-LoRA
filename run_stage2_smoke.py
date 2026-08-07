@@ -5,7 +5,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 import sys
 
-from canonical.artifacts import write_json
 from canonical.runner import run_condition_matrix
 from canonical.smoke import (
     PRIMARY_CONDITIONS,
@@ -86,21 +85,6 @@ def main(argv: list[str] | None = None) -> int:
         *(argv if argv is not None else sys.argv[1:]),
     ]
 
-    if args.fresh and output_dir.exists() and any(output_dir.iterdir()):
-        raise ValueError("--fresh requires a new or empty output directory")
-    if args.fresh or not (output_dir / "commands.json").exists():
-        output_dir.mkdir(parents=True, exist_ok=True)
-        write_json(
-            output_dir / "commands.json",
-            _command_record(
-                mode=args.mode,
-                environment=args.environment,
-                argv=invocation,
-                condition_tags=condition_tags,
-                gpu_name=gpu_name,
-            ),
-        )
-
     # Import the real backend only after parsing and GPU enforcement so --help
     # remains usable in dependency-light environments.
     from canonical.backend import RealCanonicalBackend
@@ -115,6 +99,13 @@ def main(argv: list[str] | None = None) -> int:
         fresh=args.fresh,
         command=invocation,
         repo_root=repo_root,
+        smoke_commands=_command_record(
+            mode=args.mode,
+            environment=args.environment,
+            argv=invocation,
+            condition_tags=condition_tags,
+            gpu_name=gpu_name,
+        ),
     )
     print(result)
     return 0
