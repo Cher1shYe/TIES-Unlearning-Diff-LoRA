@@ -202,10 +202,23 @@ def _validate_smoke_commands_record(record: Mapping[str, Any]) -> None:
         raise ValueError("Stage 2 smoke commands.json has invalid condition tags.")
 
 
+def _validate_smoke_commands_tags(
+    record: Mapping[str, Any], condition_tags: tuple[str, ...]
+) -> None:
+    if record["expected_condition_tags"] != list(condition_tags):
+        raise ValueError(
+            "Stage 2 smoke commands provenance condition tags do not match the matrix."
+        )
+
+
 def _write_or_validate_smoke_commands(
-    output_dir: Path, commands: Mapping[str, Any], fresh: bool
+    output_dir: Path,
+    commands: Mapping[str, Any],
+    condition_tags: tuple[str, ...],
+    fresh: bool,
 ) -> None:
     _validate_smoke_commands_record(commands)
+    _validate_smoke_commands_tags(commands, condition_tags)
     path = output_dir / "commands.json"
     if fresh:
         write_json(path, commands)
@@ -214,6 +227,7 @@ def _write_or_validate_smoke_commands(
         raise ValueError("Stage 2 smoke resume requires immutable root commands.json.")
     recorded = _read_json(path)
     _validate_smoke_commands_record(recorded)
+    _validate_smoke_commands_tags(recorded, condition_tags)
     if any(recorded[key] != commands[key] for key in _SMOKE_COMMANDS_MATCH_KEYS):
         raise ValueError("Stage 2 smoke commands provenance differs from the original run.")
 
@@ -479,7 +493,7 @@ def run_condition_matrix(
     protocol_hash = _write_or_validate_protocol_snapshot(protocol_path, output_dir, fresh)
     invocation = tuple(command or sys.argv)
     if smoke_commands is not None:
-        _write_or_validate_smoke_commands(output_dir, smoke_commands, fresh)
+        _write_or_validate_smoke_commands(output_dir, smoke_commands, tags_tuple, fresh)
     if fresh:
         backend.initialize_manifests(output_dir, protocol_path)
     manifest_hashes = _validate_manifests(output_dir)

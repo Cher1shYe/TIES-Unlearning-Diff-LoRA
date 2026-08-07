@@ -228,6 +228,42 @@ class Stage2SmokeProfileTest(unittest.TestCase):
             self.assertEqual([], result["executed"])
             self.assertEqual(original, commands_path.read_bytes())
 
+    def test_smoke_fresh_rejects_provenance_tags_not_selected_for_the_matrix(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            protocol, output = self._inputs(tmp)
+            false_commands = {
+                **SMOKE_COMMAND,
+                "expected_condition_tags": ["full_sr"],
+            }
+
+            with self.assertRaisesRegex(ValueError, "condition tags"):
+                self._run_smoke_matrix(
+                    protocol, output, MatrixFakeBackend(), fresh=True, commands=false_commands
+                )
+
+            self.assertFalse((output / "commands.json").exists())
+
+    def test_smoke_resume_rejects_stored_provenance_tags_not_selected_for_the_matrix(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            protocol, output = self._inputs(tmp)
+            self._run_smoke_matrix(
+                protocol, output, MatrixFakeBackend(), fresh=True, commands=SMOKE_COMMAND
+            )
+            commands_path = output / "commands.json"
+            false_commands = {
+                **SMOKE_COMMAND,
+                "expected_condition_tags": ["full_sr"],
+            }
+            write_json(commands_path, false_commands)
+            original = commands_path.read_bytes()
+
+            with self.assertRaisesRegex(ValueError, "condition tags"):
+                self._run_smoke_matrix(
+                    protocol, output, MatrixFakeBackend(), fresh=False, commands=SMOKE_COMMAND
+                )
+
+            self.assertEqual(original, commands_path.read_bytes())
+
     def test_stage2_smoke_help_does_not_need_ml_dependencies(self):
         result = subprocess.run(
             [sys.executable, str(ROOT / "run_stage2_smoke.py"), "--help"],
