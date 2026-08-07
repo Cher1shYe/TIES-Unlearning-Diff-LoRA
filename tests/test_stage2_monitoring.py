@@ -461,6 +461,24 @@ class Stage2MonitoringTest(unittest.TestCase):
         self.assertEqual(received["kwargs"]["watched_paths"], [output_root])
         self.assertNotIn(str(evidence), received["command"])
 
+    def test_runtime_evidence_documentation_preserves_sibling_monitor_archive_contract(self):
+        gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
+        design = (
+            ROOT / "docs" / "superpowers" / "specs" / "2026-08-08-stage2-smoke-environment-freeze-design.md"
+        ).read_text(encoding="utf-8")
+        plan = (
+            ROOT / "docs" / "superpowers" / "plans" / "2026-08-08-stage2-smoke-environment-freeze.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("ties_results/.stage2_monitor/", gitignore)
+        self.assertIn("ties_results/.stage2_monitor/", design)
+        self.assertIn("local_rtx5080.events.jsonl", design)
+        self.assertIn("colab_a100_run1.events.jsonl", design)
+        self.assertIn("colab_a100_repeat_full_sr.events.jsonl", design)
+        self.assertIn("ties_results/.stage2_monitor/", plan)
+        self.assertIn("evidence archive", plan)
+        self.assertIn("relative paths rooted at `ties_results/`", plan)
+
 
 if __name__ == "__main__":
     unittest.main()

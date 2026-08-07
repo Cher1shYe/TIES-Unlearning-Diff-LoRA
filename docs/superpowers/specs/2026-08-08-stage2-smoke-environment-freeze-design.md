@@ -39,7 +39,8 @@ This design does not authorize the 30 formal canonical result cells.
 
 ### 2.2 Stage-2-only outputs
 
-All generated smoke artifacts live under:
+Stage 2 runtime artifacts live in two ignored sibling trees rooted at
+`ties_results/`:
 
 ```text
 ties_results/stage2_smoke/
@@ -47,9 +48,17 @@ ties_results/stage2_smoke/
   colab_a100_run1/
   colab_a100_repeat_full_sr/
   freeze_bundle/
+ties_results/.stage2_monitor/
+  local_rtx5080.events.jsonl
+  colab_a100_run1.events.jsonl
+  colab_a100_repeat_full_sr.events.jsonl
 ```
 
-The smoke roots are excluded from formal result aggregation. The freeze bundle is targeted at `canonical_v1` but remains outside the formal result directory until Stage 3 initialization.
+The smoke roots and sibling monitor JSONL evidence are excluded from formal
+result aggregation but retained in the Stage 2 evidence archive. They are
+runtime evidence, not source-package contents. The freeze bundle is targeted at
+`canonical_v1` but remains outside the formal result directory until Stage 3
+initialization.
 
 ### 2.3 Resolving the manifest/empty-directory wording
 

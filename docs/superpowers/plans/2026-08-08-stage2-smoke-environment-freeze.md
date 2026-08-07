@@ -675,11 +675,11 @@ python freeze_stage2_environment.py --protocol docs/paper_rebuild/FROZEN_EXPERIM
 
 Before these commands, the notebook extracts `stage2_source.zip`, verifies `stage2_source.bundle` against `source_metadata.json`, clones the bundle, checks out the recorded commit, and asserts `git status --porcelain` is empty. The notebook must keep `--events` in the sibling `ties_results/.stage2_monitor/` directory; it must never place monitor evidence inside a child `--fresh --output-dir` root.
 
-The export cell excludes `*.pt` model files but includes checkpoint SHA-256 metadata, configs, manifests, metrics, predictions, logs, validation outputs, monitor events, and the freeze bundle.
+The export cell excludes `*.pt` model files but includes checkpoint SHA-256 metadata, configs, manifests, metrics, predictions, logs, validation outputs, sibling `ties_results/.stage2_monitor/` JSONL monitor evidence, and the freeze bundle. The evidence archive must preserve relative paths rooted at `ties_results/`; this runtime evidence is not part of the source package.
 
 - [ ] **Step 6: Ignore only generated Stage 2 runtime files**
 
-Add `.venv-stage2/`, `.uv-cache/`, `ties_results/stage2_smoke/`, and `stage2_source.zip` to `.gitignore`. Do not ignore the notebook, tests, plan, or final report.
+Add `.venv-stage2/`, `.uv-cache/`, `ties_results/stage2_smoke/`, `ties_results/.stage2_monitor/`, and `stage2_source.zip` to `.gitignore`. Do not ignore the notebook, tests, plan, or final report.
 
 - [ ] **Step 7: Run notebook JSON, packaging, freeze, and full regression checks**
 
@@ -792,6 +792,8 @@ Expected: worktree remains clean because runtime outputs are ignored; record the
 - Import ignored: `ties_results/stage2_smoke/colab_a100_run1/`
 - Import ignored: `ties_results/stage2_smoke/colab_a100_repeat_full_sr/`
 - Import ignored: `ties_results/stage2_smoke/freeze_bundle/`
+- Import ignored: `ties_results/.stage2_monitor/colab_a100_run1.events.jsonl`
+- Import ignored: `ties_results/.stage2_monitor/colab_a100_repeat_full_sr.events.jsonl`
 
 **Interfaces:**
 - Consumes the clean smoke-verified code commit and notebook.
@@ -839,7 +841,7 @@ all checksum inventory entries match
 
 - [ ] **Step 7: Export and download lightweight evidence**
 
-Download `/content/stage2_a100_evidence.zip`, extract it under `ties_results/stage2_smoke/`, and verify its exported checksum inventory locally. Do not export model `.pt` files; retain their path/hash/class-prior metadata and the A100-side validator evidence.
+Download `/content/stage2_a100_evidence.zip` and extract it at the repository root so its relative paths rooted at `ties_results/` restore both `ties_results/stage2_smoke/` and the sibling `ties_results/.stage2_monitor/` evidence. Do not extract only under `ties_results/stage2_smoke/`. Verify its exported checksum inventory locally. Do not export model `.pt` files; retain their path/hash/class-prior metadata and the A100-side validator evidence.
 
 - [ ] **Step 8: Re-run local validation over imported A100 evidence**
 

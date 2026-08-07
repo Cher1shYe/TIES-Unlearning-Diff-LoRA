@@ -16,6 +16,8 @@ env/
 # Project specific outputs (adjust if your output folder has a different name)
 ties_unlearn_results/
 ties_results/canonical_v1/
+# Stage 2 runtime smoke roots and sibling monitor evidence
+ties_results/.stage2_monitor/
 
 # Downloaded result archives (redundant with the extracted ties_results/ tree)
 *.zip
