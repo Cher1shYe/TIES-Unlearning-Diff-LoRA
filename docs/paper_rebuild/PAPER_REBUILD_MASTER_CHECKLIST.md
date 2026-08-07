@@ -23,9 +23,10 @@
 ## 当前状态
 
 ```text
-[等待确认] 阶段 0：审计与协议冻结
-[确认后下一步] 阶段 1：最小代码改造
-[等待] 阶段 2–10
+[已完成] 阶段 0：审计与协议冻结
+[已完成，待用户验收] 阶段 1：最小代码改造
+[等待用户指令] 阶段 2：Smoke tests 与环境冻结
+[等待] 阶段 3–10
 ```
 
 ## 使用方法
@@ -37,8 +38,8 @@
 
 ## 一页总览
 
-- [ ] 0. 确认冻结协议和本清单。
-- [ ] 1. 完成最小代码改造与测试。
+- [x] 0. 确认冻结协议和本清单。
+- [x] 1. 完成最小代码改造与测试。
 - [ ] 2. 通过 RTX 5080/A100 smoke tests 并冻结环境。
 - [ ] 3. 完成 30/30 核心 canonical results。
 - [ ] 4. 完成统计分析和 Gate A–D，冻结论文主线。
@@ -65,7 +66,7 @@
 - [x] 冻结 100k MNLI、5 seeds、主要指标和 utility constraint。
 - [x] 冻结 6-condition 核心归因矩阵和 Gate A–D。
 - [x] 保存完整协议到 `docs/paper_rebuild/FROZEN_EXPERIMENT_PROTOCOL.md`。
-- [ ] 用户确认本简明清单，并明确说“开始阶段 1”。
+- [x] 用户确认本简明清单，并明确说“开始阶段 1”。
 
 **完成门槛：** 用户确认后才修改代码。
 
@@ -81,16 +82,16 @@
 
 **目标：** 只修复 canonical 实验必须具备的能力，不重写主架构。
 
-- [ ] 将 `data_seed` 与 `training_seed` 分离。
-- [ ] 创建确定性的 HANS-train 80% build / 20% dev split，并验证与 evaluation 无交集。
-- [ ] 禁止 Phase 1/2 和 Phase 3 中间阶段读取 official HANS evaluation。
-- [ ] 增加 `staged_neither` 和 `class_prior_reweight` 两个条件。
-- [ ] 保存逐样本 HANS predictions、pair ID、heuristic 和 subcase。
-- [ ] 统一 config、environment、Git commit、status 和 metrics schema。
-- [ ] 标准 JSON 禁止 `NaN/Infinity`。
-- [ ] 创建支持共享 Phase-1/2 checkpoint 的 `run_canonical.py`。
-- [ ] 为上述每项补测试，并先验证测试能捕获旧行为，再验证修复通过。
-- [ ] 提交一个独立、可回滚的 canonical infrastructure commit。
+- [x] 将 `data_seed` 与 `training_seed` 分离。
+- [x] 创建确定性的 HANS-train 80% build / 20% dev split，并验证与 evaluation 无交集。
+- [x] 禁止 Phase 1/2 和 Phase 3 中间阶段读取 official HANS evaluation。
+- [x] 增加 `staged_neither` 和 `class_prior_reweight` 两个条件。
+- [x] 保存逐样本 HANS predictions、pair ID、heuristic 和 subcase。
+- [x] 统一 config、environment、Git commit、status 和 metrics schema。
+- [x] 标准 JSON 禁止 `NaN/Infinity`。
+- [x] 创建支持共享 Phase-1/2 checkpoint 的 `run_canonical.py`。
+- [x] 为上述每项补测试，并先验证测试能捕获旧行为，再验证修复通过。
+- [x] 提交一个独立、可回滚的 canonical infrastructure commit。
 
 **完成门槛：** 全部新增测试通过；旧实验结果未被覆盖；Git working tree clean。
 
@@ -282,10 +283,10 @@ Gate D 未通过 -> 从标题和摘要删除 Rank-Differential 的因果暗示�
 
 ## 现在只做一件事
 
-- [ ] 阅读这份短清单；若认可，回复：
+- [ ] 阅读 `STAGE1_CANONICAL_INFRASTRUCTURE_REPORT.md`；若验收阶段 1，回复：
 
 ```text
-开始清单阶段 1。
+开始清单阶段 2。
 ```
 
-阶段 1 完成前，不启动正式 A100 canonical runs，也不全面润色旧稿。
+阶段 2 完成前，不启动 30 个正式 A100 canonical runs，也不全面润色旧稿。
