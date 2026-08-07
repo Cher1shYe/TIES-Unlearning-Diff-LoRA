@@ -46,6 +46,72 @@ def _canonical_bytes(value: Any) -> bytes:
     ).encode("utf-8")
 
 
+def stable_record_id(
+    record: Mapping[str, Any], preferred_fields: Sequence[str] = ()
+) -> str:
+    """Return a source identity when available, otherwise a canonical record hash."""
+    for field in preferred_fields:
+        value = record.get(field)
+        if value is not None:
+            stable_id = str(value)
+            if stable_id:
+                return stable_id
+    return sha256(_canonical_bytes(dict(record))).hexdigest()
+
+
+def deterministic_cap_records(
+    records: Sequence[Mapping[str, Any]],
+    limit: int,
+    seed: int,
+    strata_fields: Sequence[str] = (),
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Select a seeded, order-independent cap with optional round-robin strata."""
+    if not isinstance(limit, int) or isinstance(limit, bool) or limit < 0:
+        raise ValueError("limit must be a non-negative integer")
+    if not isinstance(seed, int) or isinstance(seed, bool) or seed < 0:
+        raise ValueError("seed must be a non-negative integer")
+
+    ranked_strata: dict[str, list[tuple[str, dict[str, Any]]]] = {}
+    seen_ids: set[str] = set()
+    for source_record in records:
+        record = dict(source_record)
+        stable_id = stable_record_id(record)
+        if stable_id in seen_ids:
+            raise ValueError(f"duplicate stable record ID: {stable_id}")
+        seen_ids.add(stable_id)
+        stratum = _canonical_bytes([record.get(field) for field in strata_fields]).decode("utf-8")
+        ranked_strata.setdefault(stratum, []).append((stable_id, record))
+
+    for candidates in ranked_strata.values():
+        candidates.sort(
+            key=lambda item: (
+                sha256(f"{seed}\x00{item[0]}".encode("utf-8")).hexdigest(),
+                item[0],
+            )
+        )
+
+    selected: list[dict[str, Any]] = []
+    selected_ids: list[str] = []
+    offsets = {stratum: 0 for stratum in ranked_strata}
+    while len(selected) < limit:
+        selected_this_round = False
+        for stratum in sorted(ranked_strata):
+            offset = offsets[stratum]
+            candidates = ranked_strata[stratum]
+            if offset >= len(candidates):
+                continue
+            stable_id, record = candidates[offset]
+            offsets[stratum] = offset + 1
+            selected.append(record)
+            selected_ids.append(stable_id)
+            selected_this_round = True
+            if len(selected) == limit:
+                break
+        if not selected_this_round:
+            break
+    return selected, selected_ids
+
+
 def _record_value(record: Mapping[str, Any], canonical: str, source: str) -> Any:
     if canonical in record:
         return record[canonical]

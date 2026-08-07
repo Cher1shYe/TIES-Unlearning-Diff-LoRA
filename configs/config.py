@@ -37,6 +37,14 @@ class TrainConfig:
     hans_clean_split: bool = True
     data_seed: int = 42
     hans_split_seed: int = 42
+    # Optional evaluation caps are inactive for canonical runs.  The isolated
+    # Stage-2 smoke profile sets them explicitly before constructing loaders.
+    hans_eval_size: Optional[int] = None
+    esnli_eval_size: Optional[int] = None
+    anli_eval_size: Optional[int] = None
+    snli_hard_eval_size: Optional[int] = None
+    wanli_eval_size: Optional[int] = None
+    data_access_log: Optional[str] = None
 
     # --- optimiser ---
     batch_size: int = 32

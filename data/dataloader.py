@@ -9,7 +9,12 @@ from torch.utils.data import DataLoader
 from datasets import Dataset, Value, concatenate_datasets, load_dataset
 
 from configs.config import TrainConfig
-from canonical.data import sample_dataset, split_hans_records, validate_hans_disjointness
+from canonical.data import (
+    deterministic_cap_records,
+    sample_dataset,
+    split_hans_records,
+    validate_hans_disjointness,
+)
 
 def set_seed(seed: int):
     random.seed(seed)
@@ -33,6 +38,20 @@ def _tokenize_hypothesis_only(tok, batch, max_len: int):
 
 def _sample(ds: Dataset, n: int, seed: int) -> Dataset:
     return sample_dataset(ds, n, seed)
+
+
+def _cap_final_evaluation_dataset(
+    dataset: Dataset,
+    limit: int | None,
+    seed: int,
+    strata_fields: tuple[str, ...] = (),
+) -> Dataset:
+    """Apply a fixed evaluation cap before tokenization, preserving default full sets."""
+    if limit is None:
+        return dataset
+    records = [dict(dataset[index]) for index in range(len(dataset))]
+    selected, _ = deterministic_cap_records(records, limit, seed, strata_fields)
+    return Dataset.from_list(selected)
 
 def _load_hans_dataset(split: str = "eval"):
     # split="eval" -> heuristics_evaluation_set.txt  (held-out test only)
@@ -87,6 +106,13 @@ def _prepare_hans_base_dataset(cfg: TrainConfig, tok, split: str = "evaluation")
     if "sentence2" in hans.column_names:
         hans = hans.rename_column("sentence2", "hypothesis")
     hans = hans.filter(lambda ex: ex["label"] in (0, 1))
+    if split == "evaluation":
+        hans = _cap_final_evaluation_dataset(
+            hans,
+            cfg.hans_eval_size,
+            cfg.data_seed,
+            ("gold_label", "heuristic", "subcase"),
+        )
 
     def _tok_hans(batch):
         out = _tokenize_pair(tok, batch, cfg.max_seq_length)
@@ -127,6 +153,7 @@ def _prepare_esnli_test_dataset(cfg: TrainConfig, tok) -> Dataset:
     if "Sentence2" in esnli.column_names:
         esnli = esnli.rename_column("Sentence2", "hypothesis")
     esnli = esnli.filter(lambda ex: ex["label"] in (0, 1, 2) and ex["premise"] is not None and ex["hypothesis"] is not None)
+    esnli = _cap_final_evaluation_dataset(esnli, cfg.esnli_eval_size, cfg.data_seed)
 
     def _tok_esnli(batch):
         out = _tokenize_pair(tok, batch, cfg.max_seq_length)
@@ -208,6 +235,7 @@ def _prepare_anli_test_dataset(cfg: TrainConfig, tok) -> Dataset:
     anli = concatenate_datasets([ds["test_r1"], ds["test_r2"], ds["test_r3"]])
     anli = anli.filter(lambda ex: ex["label"] in (0, 1, 2)
                        and ex["premise"] is not None and ex["hypothesis"] is not None)
+    anli = _cap_final_evaluation_dataset(anli, cfg.anli_eval_size, cfg.data_seed)
 
     def _tok_anli(batch):
         out = _tokenize_pair(tok, batch, cfg.max_seq_length)
@@ -241,6 +269,7 @@ def _prepare_snli_hard_test_dataset(cfg: TrainConfig, tok) -> Dataset:
         snli = snli.rename_column("sentence2", "hypothesis")
     snli = snli.filter(lambda ex: ex["label"] in (0, 1, 2)
                        and ex["premise"] is not None and ex["hypothesis"] is not None)
+    snli = _cap_final_evaluation_dataset(snli, cfg.snli_hard_eval_size, cfg.data_seed)
 
     def _tok_snli(batch):
         out = _tokenize_pair(tok, batch, cfg.max_seq_length)
@@ -273,6 +302,7 @@ def _prepare_wanli_test_dataset(cfg: TrainConfig, tok) -> Dataset:
     wanli = wanli.map(_norm_label)
     wanli = wanli.filter(lambda ex: ex["label"] in (0, 1, 2)
                          and ex["premise"] is not None and ex["hypothesis"] is not None)
+    wanli = _cap_final_evaluation_dataset(wanli, cfg.wanli_eval_size, cfg.data_seed)
 
     def _tok_wanli(batch):
         out = _tokenize_pair(tok, batch, cfg.max_seq_length)
