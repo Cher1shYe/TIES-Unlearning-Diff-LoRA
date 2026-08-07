@@ -141,7 +141,22 @@ class StructuredDataAccessAuditTest(unittest.TestCase):
             self.assertLess(marker_index, hans_index)
             self.assertEqual(list(range(len(events))), [event["sequence"] for event in events])
 
-    def test_hans_evaluation_loader_records_a_final_access_event(self):
+    def test_append_access_event_rejects_reserved_payload_keys(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "data_access.jsonl"
+            for reserved_key in ("sequence", "timestamp"):
+                with self.assertRaisesRegex(ValueError, "reserved"):
+                    append_access_event(
+                        path,
+                        dataset="hans",
+                        split="evaluation",
+                        purpose="final",
+                        event="dataset_access",
+                        **{reserved_key: "override"},
+                    )
+            self.assertFalse(path.exists())
+
+    def test_hans_evaluation_loader_requires_final_marker_before_access(self):
         dataloader = self._dataloader_module_with_dependency_stubs()
 
         class DatasetStub:
@@ -154,6 +169,9 @@ class StructuredDataAccessAuditTest(unittest.TestCase):
             with patch.object(dataloader, "_prepare_hans_base_dataset", return_value=DatasetStub()), patch.object(
                 dataloader, "DataLoader", return_value=object()
             ):
+                with self.assertRaisesRegex(ValueError, "final_evaluation_start"):
+                    dataloader.make_hans_evaluation_loader(cfg, object())
+                record_final_evaluation_start(cfg)
                 dataloader.make_hans_evaluation_loader(cfg, object())
 
             self.assertEqual(
@@ -164,9 +182,24 @@ class StructuredDataAccessAuditTest(unittest.TestCase):
                     "purpose": "final",
                 },
                 {
-                    key: read_jsonl(path)[0][key]
+                    key: read_jsonl(path)[1][key]
                     for key in ("event", "dataset", "split", "purpose")
                 },
+            )
+
+    def test_manifest_identity_only_hans_access_is_allowed_without_final_marker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "manifests" / "data_access.jsonl"
+            append_access_event(
+                path,
+                dataset="hans",
+                split="evaluation",
+                purpose="manifest_identity_only",
+                event="dataset_access",
+            )
+            self.assertEqual(
+                "manifest_identity_only",
+                read_jsonl(path)[0]["purpose"],
             )
 
     def test_hans_evaluation_loader_passes_pair_id_preference_to_capping(self):
@@ -311,6 +344,69 @@ class StructuredDataAccessAuditTest(unittest.TestCase):
                     },
                     command=["python", "run_canonical.py"],
                 )
+
+    def test_runner_rejects_method_success_when_only_method_audit_is_missing(self):
+        class BackendWithSharedAuditOnly:
+            def initialize_manifests(self, output_dir, _protocol_path):
+                manifests = Path(output_dir) / "manifests"
+                write_json(manifests / "data_manifest.json", {"schema_version": "data_manifest_v1"})
+                write_json(manifests / "environment_manifest.json", {"schema_version": "environment_manifest_v1"})
+
+            def prepare_shared(self, training_seed, shared_dir):
+                shared_dir = Path(shared_dir)
+                write_json(shared_dir / "config.json", {"training_seed": training_seed})
+                checkpoint = shared_dir / "checkpoints" / "shared.pt"
+                checkpoint.parent.mkdir(parents=True, exist_ok=True)
+                checkpoint.write_bytes(b"shared")
+                checkpoint_hash = sha256_file(checkpoint)
+                write_json(
+                    shared_dir / "shared_checkpoint_metadata.json",
+                    {
+                        "checkpoint_role": "canonical_shared_phase2",
+                        "checkpoint_path": str(checkpoint),
+                        "checkpoint_sha256": checkpoint_hash,
+                        "class_prior_weights": {"0": 0.1, "1": 0.2, "2": 0.3},
+                    },
+                )
+                write_jsonl(shared_dir / "data_access.jsonl", [])
+                return CheckpointRef(checkpoint, checkpoint_hash)
+
+            def run_standard(self, condition, training_seed, run_dir):
+                run_dir = Path(run_dir)
+                write_json(run_dir / "config.json", {"training_seed": training_seed})
+                write_json(run_dir / "metrics.json", {})
+                write_json(run_dir / "selected_layers.json", {})
+                write_jsonl(run_dir / "hans_predictions.jsonl", [])
+                return {"final_checkpoint_hash": "a" * 64}
+
+            def run_branch(self, *_args):
+                raise AssertionError("method execution must stop at standard_lora")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            protocol = root / "FROZEN_EXPERIMENT_PROTOCOL.md"
+            protocol.write_text("# frozen\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "data_access.jsonl"):
+                run_core(
+                    protocol,
+                    root / "output",
+                    BackendWithSharedAuditOnly(),
+                    fresh=True,
+                    seeds=(42,),
+                    git_metadata={
+                        "commit": "f" * 40,
+                        "branch": "test",
+                        "dirty": False,
+                        "status_porcelain": [],
+                    },
+                    command=["python", "run_canonical.py"],
+                )
+            status = json.loads(
+                (root / "output" / "seed_42" / "standard_lora" / "status.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual("failed", status["state"])
 
 
 if __name__ == "__main__":

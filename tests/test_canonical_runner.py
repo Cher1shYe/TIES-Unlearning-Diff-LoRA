@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from canonical.artifacts import sha256_file, write_json, write_jsonl
+from canonical.artifacts import read_jsonl, sha256_file, write_json, write_jsonl
 from canonical.backend import RealCanonicalBackend
 from canonical.conditions import CONDITIONS
 from canonical.runner import CheckpointRef, run_core
@@ -200,6 +200,52 @@ class CanonicalRunnerContractTest(unittest.TestCase):
 
 
 class RealCanonicalBackendContractTest(unittest.TestCase):
+    def test_manifest_identity_access_is_logged_before_hans_manifest_collection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            backend = RealCanonicalBackend(TrainConfig(output_dir=str(root / "unused")))
+            datasets_stub = types.ModuleType("datasets")
+            datasets_stub.load_dataset = lambda *_args, **_kwargs: {
+                "train": [{"idx": 1}],
+                "validation_matched": [{"idx": 2}],
+            }
+            dataloader_stub = types.ModuleType("data.dataloader")
+
+            def fake_hans_manifest(_cfg):
+                events = read_jsonl(root / "output" / "manifests" / "data_access.jsonl")
+                self.assertEqual(
+                    {
+                        "event": "dataset_access",
+                        "dataset": "hans",
+                        "split": "evaluation",
+                        "purpose": "manifest_identity_only",
+                    },
+                    {key: events[0][key] for key in ("event", "dataset", "split", "purpose")},
+                )
+                return {
+                    "build_pair_ids": ["build-1"],
+                    "dev_pair_ids": ["dev-1"],
+                    "evaluation_pair_ids": ["eval-1"],
+                }
+
+            dataloader_stub.make_hans_split_manifest = fake_hans_manifest
+            with patch.dict(
+                sys.modules,
+                {"datasets": datasets_stub, "data.dataloader": dataloader_stub},
+            ), patch("canonical.backend.collect_environment_metadata", return_value={}), patch(
+                "canonical.backend.subprocess.run", side_effect=OSError("not available")
+            ):
+                backend.initialize_manifests(root / "output", root / "protocol.md")
+
+            self.assertEqual(
+                "manifest_identity_only",
+                read_jsonl(root / "output" / "manifests" / "data_access.jsonl")[0]["purpose"],
+            )
+
+    def test_real_backend_rejects_unclean_hans_split(self):
+        with self.assertRaisesRegex(ValueError, "hans_clean_split"):
+            RealCanonicalBackend(TrainConfig(hans_clean_split=False))
+
     def test_shared_and_branch_configs_use_exact_run_directories_and_checkpoint(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

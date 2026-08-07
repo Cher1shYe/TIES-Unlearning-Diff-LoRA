@@ -15,6 +15,7 @@ from canonical.artifacts import (
     sha256_file,
     write_json,
 )
+from canonical.access_audit import append_access_event
 from canonical.conditions import CanonicalCondition
 from canonical.data import dataset_row_ids, sample_dataset
 from canonical.runner import CheckpointRef
@@ -74,6 +75,8 @@ class RealCanonicalBackend:
         self.base_config = deepcopy(base_config or TrainConfig())
         if self.base_config.data_seed != 42 or self.base_config.hans_split_seed != 42:
             raise ValueError("canonical_v1 requires data_seed=42 and hans_split_seed=42")
+        if not self.base_config.hans_clean_split:
+            raise ValueError("canonical_v1 requires hans_clean_split=True")
 
     def _config_for_directory(
         self,
@@ -114,6 +117,13 @@ class RealCanonicalBackend:
         )
         train_ids = dataset_row_ids(train)
         validation_ids = dataset_row_ids(validation)
+        append_access_event(
+            manifests / "data_access.jsonl",
+            dataset="hans",
+            split="evaluation",
+            purpose="manifest_identity_only",
+            event="dataset_access",
+        )
         hans = make_hans_split_manifest(self.base_config)
         data_manifest = {
             "schema_version": "canonical_data_manifest_v1",
