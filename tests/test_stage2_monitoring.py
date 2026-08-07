@@ -18,6 +18,12 @@ import canonical.monitoring as monitoring
 from canonical.monitoring import MonitorPolicy, PRODUCTION_POLICY, monitor_command
 
 
+def _task_section(plan: str, heading: str, next_heading: str) -> str:
+    start = plan.index(f"### {heading}")
+    end = plan.index(f"### {next_heading}", start)
+    return plan[start:end]
+
+
 class FakeClock:
     def __init__(self):
         self.value = 0.0
@@ -461,23 +467,59 @@ class Stage2MonitoringTest(unittest.TestCase):
         self.assertEqual(received["kwargs"]["watched_paths"], [output_root])
         self.assertNotIn(str(evidence), received["command"])
 
-    def test_runtime_evidence_documentation_preserves_sibling_monitor_archive_contract(self):
+    def test_task7_runtime_ignore_and_evidence_archive_are_scoped_to_task7(self):
         gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
-        design = (
-            ROOT / "docs" / "superpowers" / "specs" / "2026-08-08-stage2-smoke-environment-freeze-design.md"
-        ).read_text(encoding="utf-8")
         plan = (
             ROOT / "docs" / "superpowers" / "plans" / "2026-08-08-stage2-smoke-environment-freeze.md"
         ).read_text(encoding="utf-8")
+        task7 = _task_section(plan, "Task 7:", "Task 8:")
 
         self.assertIn("ties_results/.stage2_monitor/", gitignore)
-        self.assertIn("ties_results/.stage2_monitor/", design)
-        self.assertIn("local_rtx5080.events.jsonl", design)
-        self.assertIn("colab_a100_run1.events.jsonl", design)
-        self.assertIn("colab_a100_repeat_full_sr.events.jsonl", design)
-        self.assertIn("ties_results/.stage2_monitor/", plan)
-        self.assertIn("evidence archive", plan)
-        self.assertIn("relative paths rooted at `ties_results/`", plan)
+        self.assertIn("ties_results/.stage2_monitor/", task7)
+        self.assertIn("evidence archive", task7)
+        self.assertIn("sibling `ties_results/.stage2_monitor/` JSONL monitor evidence", task7)
+
+    def test_task9_import_contract_names_both_sibling_a100_event_files(self):
+        plan = (
+            ROOT / "docs" / "superpowers" / "plans" / "2026-08-08-stage2-smoke-environment-freeze.md"
+        ).read_text(encoding="utf-8")
+        task9 = _task_section(plan, "Task 9:", "Task 10:")
+
+        self.assertIn("colab_a100_run1.events.jsonl", task9)
+        self.assertIn("colab_a100_repeat_full_sr.events.jsonl", task9)
+        self.assertIn("extract it at the repository root", task9)
+        self.assertIn("Do not extract only under `ties_results/stage2_smoke/`", task9)
+
+    def test_task_handoff_section_extractor_rejects_sibling_words_in_another_task(self):
+        fallback_plan = """
+### Task 7: source package only
+No runtime evidence is retained here.
+### Task 8: local runtime
+### Task 9: import
+ties_results/.stage2_monitor/ evidence archive
+### Task 10: report
+"""
+        task7 = _task_section(fallback_plan, "Task 7:", "Task 8:")
+        task9 = _task_section(fallback_plan, "Task 9:", "Task 10:")
+
+        def require_task7_contract(section):
+            self.assertIn("ties_results/.stage2_monitor/", section)
+            self.assertIn("evidence archive", section)
+
+        with self.assertRaises(AssertionError):
+            require_task7_contract(task7)
+        self.assertIn("ties_results/.stage2_monitor/", task9)
+
+    def test_gitignore_effectively_ignores_sibling_monitor_evidence(self):
+        candidate = "ties_results/.stage2_monitor/local_rtx5080.events.jsonl"
+        checked = subprocess.run(
+            ["git", "check-ignore", "-q", candidate], cwd=ROOT, check=False
+        )
+        if checked.returncode == 128:
+            rules = (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+            self.assertIn("ties_results/.stage2_monitor/", rules)
+        else:
+            self.assertEqual(checked.returncode, 0)
 
 
 if __name__ == "__main__":
