@@ -21,3 +21,6 @@ ties_unlearn_results/
 
 # Internal Team Documentation (Optional)
 Instructions.md
+
+# Local Git worktrees
+.worktrees/
