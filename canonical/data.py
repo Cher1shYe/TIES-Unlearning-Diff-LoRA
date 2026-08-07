@@ -64,6 +64,7 @@ def deterministic_cap_records(
     limit: int,
     seed: int,
     strata_fields: Sequence[str] = (),
+    preferred_fields: Sequence[str] = (),
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Select a seeded, order-independent cap with optional round-robin strata."""
     if not isinstance(limit, int) or isinstance(limit, bool) or limit < 0:
@@ -75,7 +76,7 @@ def deterministic_cap_records(
     seen_ids: set[str] = set()
     for source_record in records:
         record = dict(source_record)
-        stable_id = stable_record_id(record)
+        stable_id = stable_record_id(record, preferred_fields)
         if stable_id in seen_ids:
             raise ValueError(f"duplicate stable record ID: {stable_id}")
         seen_ids.add(stable_id)

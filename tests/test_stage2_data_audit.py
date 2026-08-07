@@ -28,13 +28,22 @@ HANS_ROWS = [
 class DeterministicEvaluationSelectionTest(unittest.TestCase):
     def test_hans_cap_is_order_independent_and_covers_label_heuristic_strata(self):
         selected_a, ids_a = deterministic_cap_records(
-            HANS_ROWS, 12, 42, ("gold_label", "heuristic", "subcase")
+            HANS_ROWS,
+            12,
+            42,
+            ("gold_label", "heuristic", "subcase"),
+            preferred_fields=("pairID",),
         )
         selected_b, ids_b = deterministic_cap_records(
-            list(reversed(HANS_ROWS)), 12, 42, ("gold_label", "heuristic", "subcase")
+            list(reversed(HANS_ROWS)),
+            12,
+            42,
+            ("gold_label", "heuristic", "subcase"),
+            preferred_fields=("pairID",),
         )
 
         self.assertEqual(ids_a, ids_b)
+        self.assertEqual(ids_a, [row["pairID"] for row in selected_a])
         self.assertEqual(len(selected_a), 12)
         self.assertEqual({row["gold_label"] for row in selected_a}, {"entailment", "non-entailment"})
         self.assertEqual(
