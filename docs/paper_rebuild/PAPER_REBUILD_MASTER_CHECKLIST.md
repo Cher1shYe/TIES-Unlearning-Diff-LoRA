@@ -118,7 +118,7 @@
 **给 Codex 的指令：**
 
 ```text
-开始清单阶段 2：执行本地和 A100 smoke tests，并冻结 canonical 环境。
+开始清单阶段 2：执行本地和 Colab 的 A100 smoke tests，并冻结 canonical 环境。
 ```
 
 ---
