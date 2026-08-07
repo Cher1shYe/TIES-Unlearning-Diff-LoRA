@@ -4,6 +4,8 @@ from dataclasses import asdict, dataclass
 import json
 import math
 from pathlib import Path
+import re
+import stat
 import subprocess
 import time
 from typing import Callable, Iterable, Sequence
@@ -31,15 +33,50 @@ PRODUCTION_POLICY = MonitorPolicy(300, 3600, 43200)
 
 
 FATAL_PATTERNS = {
-    "CUDA_OOM": ("cuda out of memory", "cudnn_status_alloc_failed", "outofmemoryerror"),
-    "NONFINITE_LOSS": ("non-finite loss", "nonfinite loss", "loss is nan", "loss=nan"),
-    "DOWNLOAD_FAILURE": ("download failed", "failed to download", "download failure"),
-    "CHECKPOINT_HASH_MISMATCH": ("checkpoint hash mismatch", "checkpoint checksum mismatch"),
-    "PREDICTION_ROW_MISMATCH": ("prediction-row mismatch", "prediction row mismatch"),
+    "CUDA_OOM": re.compile(
+        r"\bcuda\s+(?:error\s*:\s*)?out of memory\b|cudnn_status_alloc_failed|outofmemoryerror"
+    ),
+    "NONFINITE_LOSS": re.compile(
+        r"\b(?:non[- ]?finite\s+loss|loss\s*(?:is|=|:)?\s*(?:nan|inf(?:inity)?|non[- ]?finite))\b"
+    ),
+    "DOWNLOAD_FAILURE": re.compile(
+        r"\b(?:download|network|connection)(?:\s+\w+){0,3}\s+(?:failed|failure|error)\b|"
+        r"\b(?:failed|failure|error)\s+(?:to\s+)?(?:download|connect|fetch)\b"
+    ),
+    "CHECKPOINT_HASH_MISMATCH": re.compile(
+        r"\b(?:checkpoint(?:[_\s-]?hash)?|sha[- ]?256)(?:\s+\w+){0,4}\s+(?:mismatch|invalid)\b|"
+        r"\b(?:mismatch|invalid)\b.*\b(?:checkpoint|sha[- ]?256)\b"
+    ),
+    "PREDICTION_ROW_MISMATCH": re.compile(
+        r"\b(?:prediction(?:[_\s-]?(?:row|count|hash))?|hans\s+metrics)(?:\s+\w+){0,6}\s+"
+        r"(?:mismatch|invalid)\b|\b(?:metrics|prediction).*(?:recomputed|recompute).*\bmismatch\b"
+    ),
 }
 
 
-def _fingerprint(path: Path) -> dict[str, object]:
+def _resolved(path: Path) -> Path:
+    """Resolve a path without allowing a watch failure to stop monitoring."""
+    try:
+        return path.resolve(strict=False)
+    except OSError:
+        return path.absolute()
+
+
+def _is_excluded(path: Path, excluded_path: Path | None) -> bool:
+    return excluded_path is not None and _resolved(path) == excluded_path
+
+
+def _error_fingerprint(path: Path, error: OSError) -> dict[str, object]:
+    return {
+        "path": str(path),
+        "exists": None,
+        "size": None,
+        "mtime_ns": None,
+        "error": type(error).__name__,
+    }
+
+
+def _fingerprint(path: Path, *, excluded_path: Path | None = None) -> dict[str, object]:
     """Return a JSON-ready progress fingerprint for one watched path.
 
     For a directory, aggregate its regular files so writes below a run directory
@@ -50,8 +87,10 @@ def _fingerprint(path: Path) -> dict[str, object]:
         status = path.stat()
     except FileNotFoundError:
         return {"path": str(path), "exists": False, "size": None, "mtime_ns": None}
+    except (PermissionError, OSError) as error:
+        return _error_fingerprint(path, error)
 
-    if not path.is_dir():
+    if not stat.S_ISDIR(status.st_mode):
         return {
             "path": str(path),
             "exists": True,
@@ -63,15 +102,17 @@ def _fingerprint(path: Path) -> dict[str, object]:
     newest_mtime_ns = status.st_mtime_ns
     try:
         for child in path.rglob("*"):
+            if _is_excluded(child, excluded_path):
+                continue
             try:
                 child_status = child.stat()
             except (FileNotFoundError, PermissionError, OSError):
                 continue
             newest_mtime_ns = max(newest_mtime_ns, child_status.st_mtime_ns)
-            if child.is_file():
+            if stat.S_ISREG(child_status.st_mode):
                 total_size += child_status.st_size
-    except (PermissionError, OSError):
-        pass
+    except (PermissionError, OSError) as error:
+        return _error_fingerprint(path, error)
     return {
         "path": str(path),
         "exists": True,
@@ -80,27 +121,31 @@ def _fingerprint(path: Path) -> dict[str, object]:
     }
 
 
-def _fingerprints(paths: Iterable[Path]) -> list[dict[str, object]]:
-    return [_fingerprint(path) for path in paths]
+def _fingerprints(paths: Iterable[Path], *, excluded_path: Path | None = None) -> list[dict[str, object]]:
+    return [_fingerprint(path, excluded_path=excluded_path) for path in paths]
 
 
-def _watched_text_files(paths: Iterable[Path]) -> Iterable[Path]:
+def _watched_text_files(paths: Iterable[Path], *, excluded_path: Path | None = None) -> Iterable[Path]:
     for path in paths:
         try:
+            if _is_excluded(path, excluded_path):
+                continue
             if path.is_file():
                 yield path
             elif path.is_dir():
                 for child in path.rglob("*"):
-                    if child.is_file():
+                    if not _is_excluded(child, excluded_path) and child.is_file():
                         yield child
         except (FileNotFoundError, PermissionError, OSError):
             continue
 
 
-def _fatal_matches(paths: Iterable[Path]) -> list[tuple[str, Path]]:
+def _fatal_matches(
+    paths: Iterable[Path], *, excluded_path: Path | None = None
+) -> list[tuple[str, Path]]:
     """Find fatal signatures in the last MiB of watched files."""
     matches: list[tuple[str, Path]] = []
-    for path in _watched_text_files(paths):
+    for path in _watched_text_files(paths, excluded_path=excluded_path):
         try:
             with path.open("rb") as handle:
                 handle.seek(0, 2)
@@ -109,10 +154,17 @@ def _fatal_matches(paths: Iterable[Path]) -> list[tuple[str, Path]]:
                 text = handle.read().decode("utf-8", errors="replace").lower()
         except (FileNotFoundError, PermissionError, OSError):
             continue
-        for pattern_name, phrases in FATAL_PATTERNS.items():
-            if any(phrase in text for phrase in phrases):
+        for pattern_name, pattern in FATAL_PATTERNS.items():
+            if pattern.search(text):
                 matches.append((pattern_name, path))
     return matches
+
+
+def _preflight_events(event_file: Path) -> None:
+    """Create and verify the event destination before starting a child process."""
+    event_file.parent.mkdir(parents=True, exist_ok=True)
+    with event_file.open("a", encoding="utf-8", newline="\n") as handle:
+        handle.flush()
 
 
 def monitor_command(
@@ -140,14 +192,25 @@ def monitor_command(
         raise TypeError("policy must be a MonitorPolicy")
 
     argv = list(command)
-    working_directory = str(Path(cwd))
+    cwd_path = Path(cwd)
+    try:
+        cwd_path = cwd_path.resolve(strict=True)
+    except OSError as error:
+        raise ValueError(f"cwd must be an existing directory: {cwd}") from error
+    if not cwd_path.is_dir():
+        raise ValueError(f"cwd must be an existing directory: {cwd}")
+
+    working_directory = str(cwd_path)
     event_file = Path(events_path)
+    _preflight_events(event_file)
+    resolved_event_file = _resolved(event_file)
     watched = [Path(path) for path in watched_paths]
     started_at = clock()
     if not math.isfinite(started_at):
         raise ValueError("clock must return a finite number")
-    initial_fingerprints = _fingerprints(watched)
-    seen_fatal_patterns: set[tuple[str, str]] = set()
+    initial_fingerprints = _fingerprints(watched, excluded_path=resolved_event_file)
+    seen_fatal_patterns: set[str] = set()
+    seen_watch_errors: set[tuple[str, str]] = set()
 
     def emit(event: str, now: float, **details: object) -> None:
         elapsed_seconds = now - started_at
@@ -166,7 +229,17 @@ def monitor_command(
             handle.write(line + "\n")
             handle.flush()
 
-    process = popen_factory(argv, cwd=working_directory, shell=False)
+    try:
+        process = popen_factory(argv, cwd=working_directory, shell=False)
+    except OSError as error:
+        emit(
+            "CRASHED",
+            started_at,
+            returncode=127,
+            failure_stage="popen",
+            error_type=type(error).__name__,
+        )
+        return 127
     emit(
         "STARTED",
         started_at,
@@ -182,17 +255,24 @@ def monitor_command(
         if not math.isfinite(now):
             raise ValueError("clock must return a finite number")
         return_code = process.poll()
-        current_fingerprints = _fingerprints(watched)
+        current_fingerprints = _fingerprints(watched, excluded_path=resolved_event_file)
         if current_fingerprints != previous_fingerprints:
-            last_progress_at = now
-            stall_warned = False
-            emit("PROGRESS", now, fingerprints=current_fingerprints)
+            if not any("error" in fingerprint for fingerprint in current_fingerprints):
+                last_progress_at = now
+                stall_warned = False
+                emit("PROGRESS", now, fingerprints=current_fingerprints)
             previous_fingerprints = current_fingerprints
 
-        for pattern_name, pattern_path in _fatal_matches(watched):
-            key = (pattern_name, str(pattern_path))
-            if key not in seen_fatal_patterns:
-                seen_fatal_patterns.add(key)
+        for fingerprint in current_fingerprints:
+            if "error" in fingerprint:
+                key = (str(fingerprint["path"]), str(fingerprint["error"]))
+                if key not in seen_watch_errors:
+                    seen_watch_errors.add(key)
+                    emit("WATCH_ERROR", now, path=key[0], error=key[1])
+
+        for pattern_name, pattern_path in _fatal_matches(watched, excluded_path=resolved_event_file):
+            if pattern_name not in seen_fatal_patterns:
+                seen_fatal_patterns.add(pattern_name)
                 emit("FATAL_PATTERN", now, pattern=pattern_name, path=str(pattern_path))
 
         emit(
@@ -210,8 +290,13 @@ def monitor_command(
             emit("HARD_TIMEOUT", now, timeout_seconds=policy.hard_timeout_seconds)
             process.terminate()
             terminate_deadline = clock() + 10
-            while process.poll() is None and clock() < terminate_deadline:
-                sleep(min(1.0, terminate_deadline - clock()))
+            grace_checks_remaining = 10
+            while grace_checks_remaining > 0 and process.poll() is None:
+                grace_now = clock()
+                if grace_now >= terminate_deadline:
+                    break
+                sleep(min(1.0, terminate_deadline - grace_now))
+                grace_checks_remaining -= 1
             if process.poll() is None:
                 process.kill()
             return 124

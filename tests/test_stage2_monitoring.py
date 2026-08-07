@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import monitor_stage2_job
 
@@ -13,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+import canonical.monitoring as monitoring
 from canonical.monitoring import MonitorPolicy, PRODUCTION_POLICY, monitor_command
 
 
@@ -54,6 +56,15 @@ class FakeProcess:
 
     def kill(self):
         self.killed = True
+
+
+class FrozenGraceProcess(FakeProcess):
+    """Fails quickly if a monitor loops forever while its clock is frozen."""
+
+    def poll(self):
+        if self.checks >= 20:
+            raise AssertionError("hard-timeout grace loop was not bounded")
+        return super().poll()
 
 
 class Stage2MonitoringTest(unittest.TestCase):
@@ -122,6 +133,26 @@ class Stage2MonitoringTest(unittest.TestCase):
         self.assertGreaterEqual(clock.value, 13)
         self.assertEqual(self._records()[-1]["event"], "HARD_TIMEOUT")
 
+    def test_hard_timeout_kills_with_a_frozen_clock_and_noop_sleep(self):
+        process = FrozenGraceProcess(exit_after_checks=None, ignores_terminate=True)
+        clock_values = iter([0.0, *([1.0] * 100)])
+
+        result = monitor_command(
+            self.command,
+            cwd=self.root,
+            events_path=self.events,
+            watched_paths=[self.log],
+            policy=MonitorPolicy(1, 20, 1),
+            clock=lambda: next(clock_values),
+            sleep=lambda seconds: None,
+            popen_factory=lambda *args, **kwargs: process,
+        )
+
+        self.assertEqual(result, 124)
+        self.assertTrue(process.terminated)
+        self.assertTrue(process.killed)
+        self.assertLess(process.checks, 20)
+
     def test_changed_file_fingerprint_records_progress(self):
         self.log.write_text("epoch 1\n", encoding="utf-8")
         process = FakeProcess(exit_after_checks=3)
@@ -162,6 +193,138 @@ class Stage2MonitoringTest(unittest.TestCase):
         self.assertFalse(process.terminated)
         self.assertFalse(process.killed)
         self.assertEqual(process.argv, self.command)
+
+    def test_fatal_patterns_cover_all_reviewed_variants_once_without_stopping_child(self):
+        self.log.write_text(
+            "\n".join(
+                [
+                    "RuntimeError: CUDA error: out of memory",
+                    "training loss: NaN",
+                    "network connection failure while downloading model",
+                    "checkpoint_hash SHA-256 mismatch",
+                    "HANS metrics vs recomputed prediction row count mismatch",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        process = FakeProcess(exit_after_checks=2, exit_code=9)
+
+        result, _ = self._run(process, policy=MonitorPolicy(1, 20, 30))
+
+        fatal_events = [record for record in self._records() if record["event"] == "FATAL_PATTERN"]
+        self.assertEqual(result, 9)
+        self.assertEqual(
+            {"CUDA_OOM", "NONFINITE_LOSS", "DOWNLOAD_FAILURE", "CHECKPOINT_HASH_MISMATCH", "PREDICTION_ROW_MISMATCH"},
+            {record["pattern"] for record in fatal_events},
+        )
+        self.assertEqual(5, len(fatal_events))
+        self.assertFalse(process.terminated)
+        self.assertFalse(process.killed)
+
+    def test_documented_directory_watch_excludes_monitor_events_from_progress(self):
+        process = FakeProcess(exit_after_checks=5)
+
+        result, _ = self._run(
+            process,
+            policy=MonitorPolicy(1, 2, 10),
+            watched_paths=[self.root],
+        )
+
+        names = [record["event"] for record in self._records()]
+        self.assertEqual(result, 0)
+        self.assertIn("STALL_WARNING", names)
+        self.assertNotIn("PROGRESS", names)
+
+    def test_invalid_cwd_is_rejected_before_starting_a_child(self):
+        calls = []
+
+        with self.assertRaisesRegex(ValueError, "cwd"):
+            monitor_command(
+                self.command,
+                cwd=self.root / "missing",
+                events_path=self.events,
+                watched_paths=[self.log],
+                popen_factory=lambda *args, **kwargs: calls.append((args, kwargs)),
+            )
+
+        self.assertEqual(calls, [])
+        self.assertFalse(self.events.exists())
+
+    def test_event_preflight_failure_does_not_start_a_child(self):
+        blocked_parent = self.root / "not-a-directory"
+        blocked_parent.write_text("file", encoding="utf-8")
+        calls = []
+
+        with self.assertRaises(OSError):
+            monitor_command(
+                self.command,
+                cwd=self.root,
+                events_path=blocked_parent / "events.jsonl",
+                watched_paths=[self.log],
+                popen_factory=lambda *args, **kwargs: calls.append((args, kwargs)),
+            )
+
+        self.assertEqual(calls, [])
+
+    def test_popen_oserror_is_recorded_as_crash_without_orphan_child(self):
+        def missing_executable(*args, **kwargs):
+            raise FileNotFoundError("missing executable")
+
+        result = monitor_command(
+            self.command,
+            cwd=self.root,
+            events_path=self.events,
+            watched_paths=[self.log],
+            popen_factory=missing_executable,
+        )
+
+        records = self._records()
+        self.assertEqual(result, 127)
+        self.assertEqual(records[-1]["event"], "CRASHED")
+        self.assertEqual(records[-1]["returncode"], 127)
+        self.assertEqual(records[-1]["failure_stage"], "popen")
+
+    def test_unreadable_watched_path_emits_a_stable_watch_error(self):
+        blocked = self.root / "blocked.log"
+        original_stat = Path.stat
+
+        def blocked_stat(path, *args, **kwargs):
+            if path == blocked:
+                raise PermissionError("denied")
+            return original_stat(path, *args, **kwargs)
+
+        with patch("canonical.monitoring.Path.stat", new=blocked_stat):
+            result, _ = self._run(
+                FakeProcess(exit_after_checks=1),
+                policy=MonitorPolicy(1, 20, 30),
+                watched_paths=[blocked],
+            )
+
+        records = self._records()
+        watch_errors = [record for record in records if record["event"] == "WATCH_ERROR"]
+        self.assertEqual(result, 0)
+        self.assertEqual(len(watch_errors), 1)
+        self.assertEqual(watch_errors[0]["error"], "PermissionError")
+
+    def test_unreadable_watched_directory_glob_emits_a_stable_watch_error(self):
+        original_rglob = Path.rglob
+
+        def blocked_rglob(path, pattern):
+            if path == self.root:
+                raise PermissionError("denied")
+            return original_rglob(path, pattern)
+
+        with patch("canonical.monitoring.Path.rglob", new=blocked_rglob):
+            result, _ = self._run(
+                FakeProcess(exit_after_checks=1),
+                policy=MonitorPolicy(1, 20, 30),
+                watched_paths=[self.root],
+            )
+
+        watch_errors = [record for record in self._records() if record["event"] == "WATCH_ERROR"]
+        self.assertEqual(result, 0)
+        self.assertEqual(len(watch_errors), 1)
+        self.assertEqual(watch_errors[0]["error"], "PermissionError")
 
     def test_event_jsonl_has_common_strict_schema_and_no_nonfinite_numbers(self):
         process = FakeProcess(exit_after_checks=1)
