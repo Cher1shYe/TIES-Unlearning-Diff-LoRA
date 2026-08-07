@@ -35,6 +35,8 @@ class TrainConfig:
     # train/eval leakage flagged in review (HANS used for both design and test).
     # Set False to reproduce the original single-file (leaky) behaviour.
     hans_clean_split: bool = True
+    data_seed: int = 42
+    hans_split_seed: int = 42
 
     # --- optimiser ---
     batch_size: int = 32
@@ -43,7 +45,7 @@ class TrainConfig:
     warmup_ratio: float = 0.06
     max_grad_norm: float = 1.5
     fp16: bool = False
-    seed: int = 42
+    training_seed: int = 42
 
     # --- LoRA ---
     target_modules: Tuple[str, ...] = ("query", "value")
@@ -96,6 +98,9 @@ class TrainConfig:
     # subtraction give a net gain (H-nent 22.3 -> 30.8). Set reweight=False to ablate it.
     phase3_debias_reweight: bool = True
     phase3_reweight_gamma: float = 2.0
+    # Canonical modes: none | n_guided | class_prior. None preserves the legacy
+    # phase3_debias_reweight flag used by the exploratory drivers.
+    phase3_weighting: Optional[str] = None
     # Extra final P-only/N-only evaluation for rank-control sensitivity runs.
     # Disabled by default because it adds evaluation passes to every training run.
     record_branch_only_metrics: bool = False
@@ -128,6 +133,16 @@ class TrainConfig:
 
     def __post_init__(self):
         os.makedirs(self.output_dir, exist_ok=True)
+        for name in ("data_seed", "hans_split_seed", "training_seed"):
+            value = getattr(self, name)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer.")
+        valid_weighting_modes = {None, "none", "n_guided", "class_prior"}
+        if self.phase3_weighting not in valid_weighting_modes:
+            raise ValueError(
+                "phase3_weighting must be one of None, 'none', 'n_guided', "
+                f"or 'class_prior', got {self.phase3_weighting!r}."
+            )
         valid_knn_modes = {"off", "pd", "acc", "pd_and_early_wrong"}
         if self.enable_layerwise_analysis and self.kl_batches < 1:
             raise ValueError("kl_batches must be >= 1 when layer-wise analysis is enabled.")
@@ -166,3 +181,17 @@ class TrainConfig:
             raise ValueError("zfilter_drop_ratio must be in [0, 1).")
         if self.bias_model_epochs < 1:
             raise ValueError("bias_model_epochs must be >= 1.")
+
+    @property
+    def seed(self) -> int:
+        """Legacy alias for training randomness only.
+
+        Data selection intentionally never consults this property.
+        """
+        return self.training_seed
+
+    @seed.setter
+    def seed(self, value: int) -> None:
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise ValueError("seed must be a non-negative integer.")
+        self.training_seed = value

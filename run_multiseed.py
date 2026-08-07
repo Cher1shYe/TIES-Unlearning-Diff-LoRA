@@ -185,7 +185,7 @@ def main():
                 print(f"[run_multiseed] SKIP seed={seed} method={tag} (already done)")
                 continue
             base_cfg = _make_base_cfg(small=args.small, output_dir=seed_dir)
-            base_cfg.seed = seed
+            base_cfg.training_seed = seed
             print("\n" + "*" * 72 + f"\n* seed={seed}  method={tag}\n" + "*" * 72)
             try:
                 metrics = _run_tagged(tag, base_cfg)   # normalized dict (method + metric keys)
