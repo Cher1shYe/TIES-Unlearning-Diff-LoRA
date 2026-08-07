@@ -84,12 +84,19 @@ class TIESUnlearnLoRALinear(nn.Module):
 
     def _trim_mask(self, dN: torch.Tensor) -> torch.Tensor:
         """Keep only the top-`trim_ratio` fraction of ΔN by magnitude (TIES trimming)."""
+        if self.trim_ratio <= 0.0:
+            raise ValueError("trim_ratio must be greater than 0.")
         if self.trim_ratio >= 1.0:
             return torch.ones_like(dN)
-        dN_abs = dN.abs()
-        k = max(1, int(dN.numel() * self.trim_ratio))
-        threshold = torch.topk(dN_abs.view(-1), k).values[-1]
-        return (dN_abs >= threshold).float()
+        flat = dN.abs().reshape(-1)
+        k = max(1, int(flat.numel() * self.trim_ratio))
+        # Stable descending order makes equal magnitudes deterministic: the
+        # smaller flattened tensor index wins. Selecting indices (rather than a
+        # threshold) also guarantees that exactly k elements are retained.
+        order = torch.argsort(flat, descending=True, stable=True)
+        mask = torch.zeros_like(flat)
+        mask[order[:k]] = 1.0
+        return mask.reshape_as(dN)
 
     def _sign_mask(self, dP: torch.Tensor, dN: torch.Tensor) -> torch.Tensor:
         """1 where ΔP and ΔN agree in sign (TIES sign-consensus / Elect-Sign)."""
