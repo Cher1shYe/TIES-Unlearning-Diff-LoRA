@@ -9,6 +9,7 @@ from torch.utils.data import DataLoader
 from datasets import Dataset, Value, concatenate_datasets, load_dataset
 
 from configs.config import TrainConfig
+from canonical.data import sample_dataset, split_hans_records, validate_hans_disjointness
 
 def set_seed(seed: int):
     random.seed(seed)
@@ -31,7 +32,7 @@ def _tokenize_hypothesis_only(tok, batch, max_len: int):
     )
 
 def _sample(ds: Dataset, n: int, seed: int) -> Dataset:
-    return ds.shuffle(seed=seed).select(range(n)) if n and n < len(ds) else ds
+    return sample_dataset(ds, n, seed)
 
 def _load_hans_dataset(split: str = "eval"):
     # split="eval" -> heuristics_evaluation_set.txt  (held-out test only)
@@ -62,9 +63,20 @@ def _load_esnli_dataset():
     # 4. Wrap it straight back into a Hugging Face Dataset format
     return Dataset.from_list(data_list)
 
-def _prepare_hans_base_dataset(cfg: TrainConfig, tok) -> Dataset:
-    # Evaluation set only — always the held-out HANS split, never used for training.
-    hans = _load_hans_dataset("eval")
+def _hans_train_partitions(cfg: TrainConfig):
+    hans = _load_hans_dataset("train")
+    records = [dict(hans[index]) for index in range(len(hans))]
+    split = split_hans_records(records, seed=cfg.hans_split_seed)
+    return Dataset.from_list(list(split.build_records)), Dataset.from_list(list(split.dev_records)), split
+
+def _prepare_hans_base_dataset(cfg: TrainConfig, tok, split: str = "evaluation") -> Dataset:
+    if split == "evaluation":
+        hans = _load_hans_dataset("eval")
+    elif split in {"build", "dev"}:
+        build, dev, _ = _hans_train_partitions(cfg)
+        hans = build if split == "build" else dev
+    else:
+        raise ValueError("HANS split must be 'build', 'dev', or 'evaluation'.")
 
     label_map = {"entailment": 0, "non-entailment": 1}
     heuristic_map = {"lexical_overlap": 0, "subsequence": 1, "constituent": 2}
@@ -79,7 +91,11 @@ def _prepare_hans_base_dataset(cfg: TrainConfig, tok) -> Dataset:
     def _tok_hans(batch):
         out = _tokenize_pair(tok, batch, cfg.max_seq_length)
         out["label"] = batch["label"]
+        out["pair_id"] = [str(value) for value in batch["pairID"]]
+        out["gold_label_text"] = list(batch["gold_label"])
+        out["heuristic_name"] = list(batch["heuristic"])
         out["heuristic"] = [heuristic_map.get(h, -1) for h in batch["heuristic"]]
+        out["subcase"] = list(batch["subcase"])
         return out
 
     return hans.map(_tok_hans, batched=True)
@@ -89,8 +105,10 @@ def _prepare_hans_analysis_base(cfg: TrainConfig) -> Dataset:
     # Used for Phase-2 shortcut capture and Phase-2.5 layer localization. Pull from
     # the HANS *train* split when hans_clean_split is on, so the HANS evaluation set
     # (used by make_hans_loader) stays strictly held-out — no train/eval leakage.
-    split = "train" if getattr(cfg, "hans_clean_split", True) else "eval"
-    hans = _load_hans_dataset(split)
+    if getattr(cfg, "hans_clean_split", True):
+        hans, _, _ = _hans_train_partitions(cfg)
+    else:
+        hans = _load_hans_dataset("eval")
     label_map = {"entailment": 0, "non-entailment": 1}
 
     hans = hans.map(lambda ex: {"label": label_map.get(ex["gold_label"], -1)})
@@ -120,8 +138,8 @@ def _prepare_esnli_test_dataset(cfg: TrainConfig, tok) -> Dataset:
 def make_mnli_loaders(cfg: TrainConfig, tok, return_dataset=False):
     # 1. Fetch and sample data
     ds = load_dataset("nyu-mll/glue", "mnli")
-    train_ds = _sample(ds["train"], cfg.mnli_train_size, cfg.seed)
-    val_ds = _sample(ds["validation_matched"], cfg.mnli_val_size, cfg.seed)
+    train_ds = _sample(ds["train"], cfg.mnli_train_size, cfg.data_seed)
+    val_ds = _sample(ds["validation_matched"], cfg.mnli_val_size, cfg.data_seed)
 
     # 2. Tokenize processing
     train_ds = train_ds.map(lambda b: _tokenize_pair(tok, b, cfg.max_seq_length), batched=True)
@@ -144,9 +162,35 @@ def make_mnli_loaders(cfg: TrainConfig, tok, return_dataset=False):
     return train_loader, val_loader
 
 def make_hans_loader(cfg: TrainConfig, tok):
-    hans = _prepare_hans_base_dataset(cfg, tok)
-    hans.set_format(type="torch", columns=["input_ids", "attention_mask", "label", "heuristic"])
+    """Legacy alias for the held-out evaluation loader."""
+    return make_hans_evaluation_loader(cfg, tok)
+
+def _make_hans_loader(cfg: TrainConfig, tok, split: str):
+    hans = _prepare_hans_base_dataset(cfg, tok, split=split)
+    hans.set_format(type="torch", columns=[
+        "input_ids", "attention_mask", "label", "heuristic", "pair_id",
+        "gold_label_text", "heuristic_name", "subcase",
+    ])
     return DataLoader(hans, batch_size=cfg.batch_size, shuffle=False)
+
+def make_hans_build_loader(cfg: TrainConfig, tok):
+    return _make_hans_loader(cfg, tok, "build")
+
+def make_hans_dev_loader(cfg: TrainConfig, tok):
+    return _make_hans_loader(cfg, tok, "dev")
+
+def make_hans_evaluation_loader(cfg: TrainConfig, tok):
+    return _make_hans_loader(cfg, tok, "evaluation")
+
+def make_hans_split_manifest(cfg: TrainConfig):
+    _, _, split = _hans_train_partitions(cfg)
+    evaluation = _load_hans_dataset("eval")
+    evaluation_ids = [str(evaluation[index]["pairID"]) for index in range(len(evaluation))]
+    validate_hans_disjointness(split.build_pair_ids, split.dev_pair_ids, evaluation_ids)
+    manifest = split.manifest()
+    manifest["evaluation_count"] = len(evaluation_ids)
+    manifest["evaluation_pair_ids"] = evaluation_ids
+    return manifest
 
 def make_esnli_test_loader(cfg: TrainConfig, tok):
     test_ds = _prepare_esnli_test_dataset(cfg, tok)
@@ -270,7 +314,7 @@ def make_phase2_biased_mixed_loader(cfg: TrainConfig, tok):
 
     if mnli_n > 0:
         mnli = load_dataset("nyu-mll/glue", "mnli")["train"]
-        mnli = _sample_fixed_count(mnli, mnli_n, seed=cfg.seed + 611)
+        mnli = _sample_fixed_count(mnli, mnli_n, seed=cfg.data_seed + 611)
         mnli = mnli.map(lambda b: _tokenize_pair(tok, b, cfg.max_seq_length), batched=True)
         mnli = _select_phase2_train_columns(mnli)
         mnli.set_format(type="torch", columns=["input_ids", "attention_mask", "label"])
@@ -279,7 +323,7 @@ def make_phase2_biased_mixed_loader(cfg: TrainConfig, tok):
     if hans_n > 0:
         hans = _prepare_hans_analysis_base(cfg)
         hans_ent = hans.filter(lambda ex: int(ex["label"]) == 0)
-        hans_ent = _sample_fixed_count(hans_ent, hans_n, seed=cfg.seed + 712)
+        hans_ent = _sample_fixed_count(hans_ent, hans_n, seed=cfg.data_seed + 712)
         hans_ent = hans_ent.map(lambda b: _tokenize_pair(tok, b, cfg.max_seq_length), batched=True)
         hans_ent = _select_phase2_train_columns(hans_ent)
         hans_ent.set_format(type="torch", columns=["input_ids", "attention_mask", "label"])
@@ -289,7 +333,7 @@ def make_phase2_biased_mixed_loader(cfg: TrainConfig, tok):
         raise ValueError("Phase2 mixed loader is empty. Check phase2_epoch_batches and ratio.")
 
     mixed = parts[0] if len(parts) == 1 else concatenate_datasets(parts)
-    mixed = mixed.shuffle(seed=cfg.seed + 813)
+    mixed = mixed.shuffle(seed=cfg.training_seed + 813)
     mixed.set_format(type="torch", columns=["input_ids", "attention_mask", "label"])
     return DataLoader(mixed, batch_size=cfg.batch_size, shuffle=True, drop_last=True)
 
@@ -332,7 +376,7 @@ def make_phase2_5_analysis_loaders(cfg: TrainConfig, tok):
         mnli,
         cfg.knn_ref_mnli,
         cfg.knn_query_mnli,
-        seed=cfg.seed + 101,
+        seed=cfg.data_seed + 101,
     )
     # MNLI is mapped to binary classification in the analysis phase; neutral/contradiction are both merged into non-entailment.
     mnli_ref = _attach_analysis_fields(_tokenize_analysis_dataset(mnli_ref_raw, tok, cfg), group_id=0)
@@ -346,13 +390,13 @@ def make_phase2_5_analysis_loaders(cfg: TrainConfig, tok):
         hans_ent_raw,
         cfg.knn_ref_hans_entail,
         cfg.knn_query_hans_entail,
-        seed=cfg.seed + 202,
+        seed=cfg.data_seed + 202,
     )
     hans_non_ref_raw, hans_non_query_raw = _split_for_reference_and_query(
         hans_non_raw,
         cfg.knn_ref_hans_non_entail,
         cfg.knn_query_hans_non_entail,
-        seed=cfg.seed + 303,
+        seed=cfg.data_seed + 303,
     )
 
     hans_ent_ref = _attach_analysis_fields(_tokenize_analysis_dataset(hans_ent_ref_raw, tok, cfg), group_id=1)
@@ -369,8 +413,8 @@ def make_phase2_5_analysis_loaders(cfg: TrainConfig, tok):
     hans_non_query = _select_analysis_columns(hans_non_query)
 
     # Finally, piece the three parts together into a unified reference/query loader for P-only / N-only to share the same batch of samples.
-    ref_ds = concatenate_datasets([mnli_ref, hans_ent_ref, hans_non_ref]).shuffle(seed=cfg.seed + 404)
-    query_ds = concatenate_datasets([mnli_query, hans_ent_query, hans_non_query]).shuffle(seed=cfg.seed + 505)
+    ref_ds = concatenate_datasets([mnli_ref, hans_ent_ref, hans_non_ref]).shuffle(seed=cfg.data_seed + 404)
+    query_ds = concatenate_datasets([mnli_query, hans_ent_query, hans_non_query]).shuffle(seed=cfg.data_seed + 505)
 
     cols = ["input_ids", "attention_mask", "analysis_label", "group_id"]
     ref_ds.set_format(type="torch", columns=cols)
@@ -398,8 +442,8 @@ def make_debias_datasets(cfg: TrainConfig, tok):
     """
     ds = load_dataset("nyu-mll/glue", "mnli")
     # Identical sampling to make_mnli_loaders so the comparison stays fair.
-    train_base = _sample(ds["train"], cfg.mnli_train_size, cfg.seed)
-    val_base = _sample(ds["validation_matched"], cfg.mnli_val_size, cfg.seed)
+    train_base = _sample(ds["train"], cfg.mnli_train_size, cfg.data_seed)
+    val_base = _sample(ds["validation_matched"], cfg.mnli_val_size, cfg.data_seed)
     # GLUE MNLI ships a native (non-contiguous) ``idx`` column; drop it before
     # adding our own contiguous 0..N-1 index, otherwise Arrow raises
     # "columns['idx'] are duplicated". The contiguous index must match row order
