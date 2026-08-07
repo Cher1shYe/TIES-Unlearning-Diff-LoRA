@@ -149,6 +149,17 @@ class CanonicalRunnerContractTest(unittest.TestCase):
                 backend.method_calls,
             )
 
+    def test_run_core_defaults_still_execute_thirty_method_cells(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            protocol, output = self._inputs(tmp)
+            backend = FakeBackend()
+
+            result = self._run(protocol, output, backend, fresh=True)
+
+            self.assertEqual(30, len(result["executed"]))
+            self.assertEqual(5, backend.prepare_calls)
+            self.assertEqual(30, len(backend.method_calls))
+
     def test_fresh_refuses_non_empty_output_directory(self):
         with tempfile.TemporaryDirectory() as tmp:
             protocol, output = self._inputs(tmp)

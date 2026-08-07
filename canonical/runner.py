@@ -85,9 +85,13 @@ def _assert_clean_git(metadata: Mapping[str, Any]) -> None:
         raise ValueError("Canonical execution requires a recorded Git commit.")
 
 
-def _prepare_output_directory(output_dir: Path, fresh: bool) -> None:
+def _prepare_output_directory(
+    output_dir: Path, fresh: bool, *, allowed_existing_entries: Sequence[str] = ()
+) -> None:
     if fresh:
-        if output_dir.exists() and any(output_dir.iterdir()):
+        allowed = set(allowed_existing_entries)
+        existing = tuple(output_dir.iterdir()) if output_dir.exists() else ()
+        if any(entry.name not in allowed for entry in existing):
             raise ValueError("--fresh requires a new or empty output directory")
         output_dir.mkdir(parents=True, exist_ok=True)
         return
@@ -129,20 +133,39 @@ def _validate_manifests(output_dir: Path) -> dict[str, str]:
 
 
 def _write_or_validate_run_matrix(
-    output_dir: Path, seeds: tuple[int, ...], fresh: bool
+    output_dir: Path,
+    seeds: tuple[int, ...],
+    condition_tags: tuple[str, ...],
+    matrix_schema_version: str,
+    fresh: bool,
 ) -> None:
     path = output_dir / "manifests" / "run_matrix.json"
     expected = {
-        "schema_version": "canonical_run_matrix_v1",
+        "schema_version": matrix_schema_version,
         "training_seeds": list(seeds),
         "condition_orders": {
-            str(seed): list(rotated_condition_order(seed)) for seed in seeds
+            str(seed): [
+                tag for tag in rotated_condition_order(seed) if tag in condition_tags
+            ]
+            for seed in seeds
         },
     }
     if fresh:
         write_json(path, expected)
     elif _read_json(path) != expected:
         raise ValueError("Canonical run matrix differs from the frozen seed/condition order.")
+
+
+def _validated_condition_tags(condition_tags: Sequence[str]) -> tuple[str, ...]:
+    tags = tuple(condition_tags)
+    if not tags:
+        raise ValueError("Canonical condition matrix requires at least one condition tag.")
+    unknown = [tag for tag in tags if tag not in CONDITIONS]
+    if unknown:
+        raise ValueError(f"Unknown canonical condition tag(s): {unknown}")
+    if len(set(tags)) != len(tags):
+        raise ValueError("Canonical condition matrix must not repeat condition tags.")
+    return tags
 
 
 def _artifact_hashes(base_dir: Path, relative_paths: Iterable[str]) -> dict[str, str]:
@@ -379,31 +402,42 @@ def _execute_method(
         raise
 
 
-def run_core(
+def run_condition_matrix(
     protocol_path: os.PathLike[str] | str,
     output_dir: os.PathLike[str] | str,
     backend: CanonicalBackend,
     *,
+    seeds: Sequence[int],
+    condition_tags: Sequence[str],
+    matrix_schema_version: str,
     fresh: bool = False,
-    seeds: Sequence[int] = CANONICAL_TRAINING_SEEDS,
     git_metadata: Mapping[str, Any] | None = None,
     command: Sequence[str] | None = None,
     repo_root: os.PathLike[str] | str = ".",
 ) -> dict[str, Any]:
-    """Execute or resume the frozen core matrix, stopping on the first failure."""
+    """Execute or resume a validated subset of the frozen condition matrix."""
     protocol_path = Path(protocol_path).resolve()
     output_dir = Path(output_dir).resolve()
     seeds_tuple = tuple(int(seed) for seed in seeds)
+    tags_tuple = _validated_condition_tags(condition_tags)
     for seed in seeds_tuple:
         rotated_condition_order(seed)
     git_info = dict(git_metadata or collect_git_metadata(repo_root))
     _assert_clean_git(git_info)
-    _prepare_output_directory(output_dir, fresh)
+    _prepare_output_directory(
+        output_dir,
+        fresh,
+        allowed_existing_entries=("commands.json",)
+        if fresh and (output_dir / "commands.json").is_file()
+        else (),
+    )
     protocol_hash = _write_or_validate_protocol_snapshot(protocol_path, output_dir, fresh)
     if fresh:
         backend.initialize_manifests(output_dir, protocol_path)
     manifest_hashes = _validate_manifests(output_dir)
-    _write_or_validate_run_matrix(output_dir, seeds_tuple, fresh)
+    _write_or_validate_run_matrix(
+        output_dir, seeds_tuple, tags_tuple, matrix_schema_version, fresh
+    )
     invocation = tuple(command or sys.argv)
 
     executed = []
@@ -420,6 +454,8 @@ def run_core(
             command=invocation,
         )
         for tag in rotated_condition_order(training_seed):
+            if tag not in tags_tuple:
+                continue
             condition = CONDITIONS[tag]
             did_run = _execute_method(
                 backend,
@@ -435,3 +471,29 @@ def run_core(
             target = {"training_seed": training_seed, "method_tag": tag}
             (executed if did_run else skipped).append(target)
     return {"protocol_sha256": protocol_hash, "executed": executed, "skipped": skipped}
+
+
+def run_core(
+    protocol_path: os.PathLike[str] | str,
+    output_dir: os.PathLike[str] | str,
+    backend: CanonicalBackend,
+    *,
+    fresh: bool = False,
+    seeds: Sequence[int] = CANONICAL_TRAINING_SEEDS,
+    git_metadata: Mapping[str, Any] | None = None,
+    command: Sequence[str] | None = None,
+    repo_root: os.PathLike[str] | str = ".",
+) -> dict[str, Any]:
+    """Execute or resume the frozen core matrix, stopping on the first failure."""
+    return run_condition_matrix(
+        protocol_path,
+        output_dir,
+        backend,
+        seeds=seeds,
+        condition_tags=tuple(CONDITIONS),
+        matrix_schema_version="canonical_run_matrix_v1",
+        fresh=fresh,
+        git_metadata=git_metadata,
+        command=command,
+        repo_root=repo_root,
+    )
