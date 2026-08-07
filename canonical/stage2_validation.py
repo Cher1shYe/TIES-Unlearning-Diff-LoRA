@@ -11,10 +11,27 @@ from typing import Any, Mapping, Sequence
 
 from canonical.artifacts import sha256_file
 from canonical.hans import aggregate_hans_predictions
+from canonical.runner import _METHOD_OUTPUTS, _SHARED_OUTPUTS
 
 
 def _reject_json_constant(value: str) -> None:
     raise ValueError(f"non-finite JSON constant is forbidden: {value}")
+
+
+def _reject_non_finite_numbers(value: Any, *, path: str = "$") -> None:
+    if isinstance(value, bool) or value is None or isinstance(value, str):
+        return
+    if isinstance(value, Real):
+        if not math.isfinite(float(value)):
+            raise ValueError(f"non-finite JSON number at {path}")
+        return
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            _reject_non_finite_numbers(item, path=f"{path}.{key}")
+        return
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            _reject_non_finite_numbers(item, path=f"{path}[{index}]")
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -25,6 +42,7 @@ def _read_json(path: Path) -> dict[str, Any]:
         raise ValueError(f"invalid JSON in {path}: {error}") from error
     if not isinstance(value, dict):
         raise ValueError(f"{path} must contain a JSON object")
+    _reject_non_finite_numbers(value)
     return value
 
 
@@ -38,13 +56,14 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
                 value = json.loads(line, parse_constant=_reject_json_constant)
                 if not isinstance(value, dict):
                     raise ValueError(f"{path}:{line_number} must be a JSON object")
+                _reject_non_finite_numbers(value, path=f"$[{line_number}]")
                 rows.append(value)
     except json.JSONDecodeError as error:
         raise ValueError(f"invalid JSONL in {path}: {error}") from error
     return rows
 
 
-def _check_success_status(directory: Path) -> None:
+def _check_success_status(directory: Path, *, required_outputs: Sequence[str]) -> None:
     status_path = directory / "status.json"
     if not status_path.is_file():
         raise ValueError(f"missing status.json: {directory}")
@@ -54,6 +73,12 @@ def _check_success_status(directory: Path) -> None:
     hashes = status.get("output_hashes")
     if not isinstance(hashes, dict) or not hashes:
         raise ValueError(f"successful status has no output hashes: {status_path}")
+    expected_paths = set(required_outputs)
+    actual_paths = set(hashes)
+    if missing := expected_paths - actual_paths:
+        raise ValueError(f"status has missing required output hashes: {sorted(missing)}")
+    if unexpected := actual_paths - expected_paths:
+        raise ValueError(f"status has unexpected output hashes: {sorted(unexpected)}")
     for relative, expected_hash in hashes.items():
         if not isinstance(relative, str) or not isinstance(expected_hash, str):
             raise ValueError(f"invalid output hash entry in {status_path}")
@@ -83,24 +108,41 @@ def _finite_positive_weights(metadata: Mapping[str, Any]) -> dict[str, float]:
     return normalized
 
 
-def _validate_audit_events(events: Sequence[Mapping[str, Any]], *, source: Path, completed_method: bool) -> None:
+def _validate_manifest_identity_audit(events: Sequence[Mapping[str, Any]], *, source: Path) -> None:
+    if len(events) != 2:
+        raise ValueError(f"manifest identity audit must contain its access and summary events: {source}")
+    for sequence, event in enumerate(events):
+        if event.get("sequence") != sequence or not isinstance(event.get("timestamp"), str) or not event["timestamp"]:
+            raise ValueError(f"invalid manifest identity audit sequence or timestamp: {source}")
+        if event.get("dataset") != "hans" or event.get("split") != "evaluation" or event.get("purpose") != "manifest_identity_only":
+            raise ValueError(f"invalid manifest identity audit event: {source}")
+        if sequence == 0 and event.get("event") == "dataset_access":
+            if set(event) != {"sequence", "timestamp", "event", "dataset", "split", "purpose"}:
+                raise ValueError(f"invalid manifest identity audit access schema: {source}")
+        elif sequence == 1 and event.get("event") == "manifest_identity_summary":
+            required = {"sequence", "timestamp", "event", "dataset", "split", "purpose", "identity_counts", "identity_checksums"}
+            if set(event) != required or not isinstance(event["identity_counts"], Mapping) or not isinstance(event["identity_checksums"], Mapping):
+                raise ValueError(f"invalid manifest identity audit summary schema: {source}")
+        else:
+            raise ValueError(f"invalid manifest identity audit event type: {source}")
+
+
+def _validate_method_audit(events: Sequence[Mapping[str, Any]], *, source: Path) -> None:
     marker_seen = False
     evaluation_seen = False
     for event in events:
+        if event.get("purpose") == "manifest_identity_only":
+            raise ValueError(f"manifest_identity_only is only permitted in the root manifest audit: {source}")
         if event.get("event") == "final_evaluation_start":
             marker_seen = True
             continue
         is_hans_evaluation = event.get("dataset") == "hans" and event.get("split") == "evaluation"
         if not is_hans_evaluation:
             continue
-        # This approved pre-run identity event has no model inference and must
-        # remain visible without being treated as official evaluation.
-        if event.get("purpose") == "manifest_identity_only":
-            continue
         if not marker_seen:
             raise ValueError(f"official HANS evaluation access before final_evaluation_start: {source}")
         evaluation_seen = True
-    if completed_method and (not marker_seen or not evaluation_seen):
+    if not marker_seen or not evaluation_seen:
         raise ValueError(f"completed method lacks final_evaluation_start or official HANS evaluation: {source}")
 
 
@@ -119,7 +161,8 @@ def _validate_method(
     seed: int,
     common: Mapping[str, str],
 ) -> None:
-    _check_success_status(run_dir)
+    _check_success_status(run_dir, required_outputs=_METHOD_OUTPUTS)
+    _read_json(run_dir / "config.json")
     manifest = _read_json(run_dir / "run_manifest.json")
     if manifest.get("method_tag") != method or manifest.get("training_seed") != seed:
         raise ValueError(f"run manifest method/seed mismatch: {run_dir}")
@@ -141,22 +184,28 @@ def _validate_method(
     reported_hans = final.get("hans")
     if recomputed != reported_hans:
         raise ValueError(f"HANS metrics do not exactly match recomputed predictions: {run_dir}")
-    _validate_audit_events(_read_jsonl(run_dir / "data_access.jsonl"), source=run_dir, completed_method=True)
+    _read_json(run_dir / "selected_layers.json")
+    _validate_method_audit(_read_jsonl(run_dir / "data_access.jsonl"), source=run_dir)
 
 
 def _validate_shared_checkpoint(seed_dir: Path, *, seed: int, common: Mapping[str, str]) -> tuple[dict[str, Any], dict[str, float]]:
     shared_dir = seed_dir / "shared_phase2"
-    _check_success_status(shared_dir)
+    reference = _read_json(shared_dir / "shared_checkpoint.json")
+    relative = reference.get("path_relative")
+    if not isinstance(relative, str):
+        raise ValueError(f"invalid shared checkpoint reference: {shared_dir}")
+    if relative in _SHARED_OUTPUTS or Path(relative).is_absolute() or ".." in Path(relative).parts:
+        raise ValueError(f"shared checkpoint path must be a distinct safe artifact: {shared_dir}")
+    _check_success_status(shared_dir, required_outputs=(*_SHARED_OUTPUTS, relative))
+    _read_json(shared_dir / "config.json")
     manifest = _read_json(shared_dir / "run_manifest.json")
     if manifest.get("role") != "shared_phase2" or manifest.get("training_seed") != seed:
         raise ValueError(f"shared Phase-2 run manifest mismatch: {shared_dir}")
     for key, expected in common.items():
         if manifest.get(key) != expected:
             raise ValueError(f"shared Phase-2 {key} does not bind the root artifact: {shared_dir}")
-    reference = _read_json(shared_dir / "shared_checkpoint.json")
-    relative = reference.get("path_relative")
     digest = reference.get("sha256")
-    if not isinstance(relative, str) or not isinstance(digest, str):
+    if not isinstance(digest, str):
         raise ValueError(f"invalid shared checkpoint reference: {shared_dir}")
     checkpoint_path = (shared_dir / relative).resolve()
     if shared_dir.resolve() not in checkpoint_path.parents or not checkpoint_path.is_file() or sha256_file(checkpoint_path) != digest:
@@ -191,6 +240,7 @@ def _root_common(root: Path) -> tuple[dict[str, str], dict[str, Any]]:
     environment = root / "manifests" / "environment_manifest.json"
     if not data.is_file() or not environment.is_file():
         raise ValueError("smoke root lacks data or environment manifest")
+    _read_json(data)
     return (
         {
             "protocol_sha256": protocol_hash,
@@ -216,10 +266,9 @@ def validate_smoke_root(
     commands = _read_json(root / "commands.json")
     if commands.get("expected_condition_tags") != list(conditions):
         raise ValueError("commands.json condition tags do not match validation conditions")
-    _validate_audit_events(
+    _validate_manifest_identity_audit(
         _read_jsonl(root / "manifests" / "data_access.jsonl"),
         source=root / "manifests" / "data_access.jsonl",
-        completed_method=False,
     )
     matrix = _read_json(root / "manifests" / "run_matrix.json")
     seeds = matrix.get("training_seeds")
@@ -296,7 +345,7 @@ def _repeat_full_sr(root: Path) -> tuple[Mapping[str, Any], Mapping[str, Any], M
     if not isinstance(seeds, list) or len(seeds) != 1 or not isinstance(seeds[0], int):
         raise ValueError("repeat comparison requires exactly one integer training seed")
     run = root / f"seed_{seeds[0]}" / "full_sr"
-    _check_success_status(run)
+    _check_success_status(run, required_outputs=_METHOD_OUTPUTS)
     manifest = _read_json(run / "run_manifest.json")
     for field, expected in common.items():
         if manifest.get(field) != expected:
@@ -315,10 +364,31 @@ def _repeat_full_sr(root: Path) -> tuple[Mapping[str, Any], Mapping[str, Any], M
     return provenance, hans, mnli, commands
 
 
+def _validate_a100_root_identity(root: Path, *, mode: str, conditions: Sequence[str]) -> None:
+    commands = _read_json(root / "commands.json")
+    if commands.get("mode") != mode:
+        raise ValueError(f"A100 smoke mode must be {mode}")
+    if commands.get("environment") != "colab_a100":
+        raise ValueError("A100 smoke environment must be colab_a100")
+    if commands.get("expected_condition_tags") != list(conditions):
+        raise ValueError("A100 smoke condition tags do not match its required matrix")
+    common, environment = _root_common(root)
+    del common
+    gpu = commands.get("gpu_name")
+    if not isinstance(gpu, str) or "A100" not in gpu or environment.get("gpu") != gpu:
+        raise ValueError("A100 gpu evidence is missing or inconsistent")
+    canonical_dir = Path("ties_results/canonical_v1")
+    validate_smoke_root(root, expected_conditions=conditions, canonical_dir=canonical_dir)
+
+
 def compare_a100_repeat(primary_root: Path, repeat_root: Path, tolerance: float = 0.005) -> dict[str, Any]:
     """Compare fresh A100 full_sr smoke runs without using MNLI as the gate."""
-    primary_provenance, primary_hans, primary_mnli, _ = _repeat_full_sr(Path(primary_root).resolve())
-    repeat_provenance, repeat_hans, repeat_mnli, _ = _repeat_full_sr(Path(repeat_root).resolve())
+    primary_root = Path(primary_root).resolve()
+    repeat_root = Path(repeat_root).resolve()
+    _validate_a100_root_identity(primary_root, mode="primary", conditions=("standard_lora", "full_sr", "class_prior_reweight"))
+    _validate_a100_root_identity(repeat_root, mode="repeat_full_sr", conditions=("full_sr",))
+    primary_provenance, primary_hans, primary_mnli, _ = _repeat_full_sr(primary_root)
+    repeat_provenance, repeat_hans, repeat_mnli, _ = _repeat_full_sr(repeat_root)
     for field, primary_value in primary_provenance.items():
         if repeat_provenance.get(field) != primary_value:
             label = "gpu" if field == "gpu" else field

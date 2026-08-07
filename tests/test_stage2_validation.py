@@ -12,6 +12,7 @@ if str(ROOT) not in sys.path:
 
 from canonical.artifacts import sha256_file, write_json, write_jsonl
 from canonical.hans import aggregate_hans_predictions
+from canonical.runner import _METHOD_OUTPUTS, _SHARED_OUTPUTS
 from canonical.stage2_validation import (
     compare_a100_repeat,
     compare_metric_values,
@@ -69,6 +70,16 @@ def _rehash_status(directory):
     _write_success_status(directory, list(status["output_hashes"]))
 
 
+def _set_status_hashes(directory, relative_paths):
+    _write_success_status(directory, relative_paths)
+
+
+def _repeat_root(base, **kwargs):
+    kwargs.setdefault("mode", "repeat_full_sr")
+    kwargs.setdefault("conditions", ("full_sr",))
+    return _create_smoke_root(base, **kwargs)
+
+
 def _manifest(method, checkpoint=None, *, protocol_hash=HASH_A, data_hash=HASH_A, environment_hash=HASH_B):
     return {
         "schema_version": "canonical_run_manifest_v1",
@@ -87,7 +98,15 @@ def _manifest(method, checkpoint=None, *, protocol_hash=HASH_A, data_hash=HASH_A
     }
 
 
-def _create_smoke_root(base, *, environment="NVIDIA A100-SXM4-40GB", mnli_accuracy=0.8):
+def _create_smoke_root(
+    base,
+    *,
+    environment="NVIDIA A100-SXM4-40GB",
+    mnli_accuracy=0.8,
+    mode="primary",
+    conditions=PRIMARY_CONDITIONS,
+    smoke_environment="colab_a100",
+):
     root = Path(base) / "smoke"
     manifests = root / "manifests"
     manifests.mkdir(parents=True)
@@ -101,7 +120,7 @@ def _create_smoke_root(base, *, environment="NVIDIA A100-SXM4-40GB", mnli_accura
         {
             "schema_version": "stage2_smoke_matrix_v1",
             "training_seeds": [42],
-            "condition_orders": {"42": list(PRIMARY_CONDITIONS)},
+            "condition_orders": {"42": list(conditions)},
         },
     )
     data_hash = sha256_file(manifests / "data_manifest.json")
@@ -110,10 +129,10 @@ def _create_smoke_root(base, *, environment="NVIDIA A100-SXM4-40GB", mnli_accura
         root / "commands.json",
         {
             "schema_version": "stage2_smoke_commands_v1",
-            "mode": "primary",
-            "environment": "colab_a100",
+            "mode": mode,
+            "environment": smoke_environment,
             "argv": ["python", "run_stage2_smoke.py"],
-            "expected_condition_tags": list(PRIMARY_CONDITIONS),
+            "expected_condition_tags": list(conditions),
             "profile_name": "stage2_smoke_v1",
             "gpu_name": environment,
             "started_at": "2026-08-08T00:00:00+00:00",
@@ -127,7 +146,10 @@ def _create_smoke_root(base, *, environment="NVIDIA A100-SXM4-40GB", mnli_accura
     (root / "protocol_snapshot" / "protocol_sha256.txt").write_text(protocol_hash + "\n", encoding="utf-8")
     write_jsonl(
         manifests / "data_access.jsonl",
-        [{"event": "dataset_access", "dataset": "hans", "split": "evaluation", "purpose": "manifest_identity_only"}],
+        [
+            {"sequence": 0, "timestamp": "2026-08-08T00:00:00+00:00", "event": "dataset_access", "dataset": "hans", "split": "evaluation", "purpose": "manifest_identity_only"},
+            {"sequence": 1, "timestamp": "2026-08-08T00:00:01+00:00", "event": "manifest_identity_summary", "dataset": "hans", "split": "evaluation", "purpose": "manifest_identity_only", "identity_counts": {"build": 1, "dev": 1, "evaluation": 1}, "identity_checksums": {"build": HASH_A, "dev": HASH_A, "evaluation": HASH_A}},
+        ],
     )
 
     seed = root / "seed_42"
@@ -155,11 +177,11 @@ def _create_smoke_root(base, *, environment="NVIDIA A100-SXM4-40GB", mnli_accura
     (shared / "stderr.log").write_text("", encoding="utf-8")
     _write_success_status(
         shared,
-        ["config.json", "run_manifest.json", "shared_checkpoint.json", "shared_checkpoint_metadata.json", "data_access.jsonl", "stdout.log", "stderr.log", "checkpoints/shared.pt"],
+        [*_SHARED_OUTPUTS, "checkpoints/shared.pt"],
     )
 
     shared_ref = {"path": str(checkpoint), "sha256": checkpoint_hash}
-    for method in PRIMARY_CONDITIONS:
+    for method in conditions:
         run = seed / method
         run.mkdir(parents=True)
         write_json(run / "config.json", {"training_seed": 42, "method_tag": method, "output_dir": str(run)})
@@ -197,7 +219,7 @@ def _create_smoke_root(base, *, environment="NVIDIA A100-SXM4-40GB", mnli_accura
         (run / "stderr.log").write_text("", encoding="utf-8")
         _write_success_status(
             run,
-            ["config.json", "run_manifest.json", "metrics.json", "hans_predictions.jsonl", "selected_layers.json", "data_access.jsonl", "stdout.log", "stderr.log"],
+            _METHOD_OUTPUTS,
         )
     return root
 
@@ -241,6 +263,61 @@ class Stage2ValidationTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "artifact hash mismatch"):
                 validate_smoke_root(root, expected_conditions=PRIMARY_CONDITIONS, canonical_dir=Path(tmp) / "canonical_v1")
 
+    def test_validator_rejects_missing_and_extra_status_hash_entries(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cases = (("config.json", "missing required output hashes"), ("metrics.json", "missing required output hashes"))
+            for index, (missing, message) in enumerate(cases):
+                root = _create_smoke_root(Path(tmp) / f"missing-{index}")
+                run = root / "seed_42" / "full_sr"
+                _set_status_hashes(run, [name for name in _METHOD_OUTPUTS if name != missing])
+                with self.assertRaisesRegex(ValueError, message):
+                    validate_smoke_root(root, expected_conditions=PRIMARY_CONDITIONS, canonical_dir=Path(tmp) / "canonical_v1")
+
+            root = _create_smoke_root(Path(tmp) / "extra")
+            run = root / "seed_42" / "full_sr"
+            (run / "unexpected.txt").write_text("unexpected\n", encoding="utf-8")
+            _set_status_hashes(run, [*_METHOD_OUTPUTS, "unexpected.txt"])
+            with self.assertRaisesRegex(ValueError, "unexpected output hashes"):
+                validate_smoke_root(root, expected_conditions=PRIMARY_CONDITIONS, canonical_dir=Path(tmp) / "canonical_v1")
+
+    def test_validator_rejects_shared_checkpoint_aliasing_a_required_metadata_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = _create_smoke_root(Path(tmp) / "shared-alias")
+            shared = root / "seed_42" / "shared_phase2"
+            config_hash = sha256_file(shared / "config.json")
+            write_json(shared / "shared_checkpoint.json", {"path_relative": "config.json", "sha256": config_hash})
+            metadata = json.loads((shared / "shared_checkpoint_metadata.json").read_text(encoding="utf-8"))
+            metadata["checkpoint_path"] = str(shared / "config.json")
+            metadata["checkpoint_sha256"] = config_hash
+            write_json(shared / "shared_checkpoint_metadata.json", metadata)
+            _set_status_hashes(shared, _SHARED_OUTPUTS)
+            shared_ref = {"path": str(shared / "config.json"), "sha256": config_hash}
+            for method in ("full_sr", "class_prior_reweight"):
+                run = root / "seed_42" / method
+                manifest = json.loads((run / "run_manifest.json").read_text(encoding="utf-8"))
+                manifest["shared_phase2_checkpoint"] = shared_ref
+                write_json(run / "run_manifest.json", manifest)
+                _rehash_status(run)
+
+            with self.assertRaisesRegex(ValueError, "checkpoint path"):
+                validate_smoke_root(root, expected_conditions=PRIMARY_CONDITIONS, canonical_dir=Path(tmp) / "canonical_v1")
+
+    def test_validator_rejects_exponent_overflow_in_nested_json_and_jsonl(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = _create_smoke_root(Path(tmp) / "json")
+            config = root / "seed_42" / "standard_lora" / "config.json"
+            config.write_text('{"nested":[1e9999]}\n', encoding="utf-8")
+            _rehash_status(root / "seed_42" / "standard_lora")
+            with self.assertRaisesRegex(ValueError, "non-finite JSON number"):
+                validate_smoke_root(root, expected_conditions=PRIMARY_CONDITIONS, canonical_dir=Path(tmp) / "canonical_v1")
+
+            root = _create_smoke_root(Path(tmp) / "jsonl")
+            audit = root / "seed_42" / "standard_lora" / "data_access.jsonl"
+            audit.write_text('{"event":"final_evaluation_start","dataset":"hans","split":null,"purpose":"boundary"}\n{"event":"dataset_access","dataset":"hans","split":"evaluation","purpose":"final","nested":{"bad":-1e9999}}\n', encoding="utf-8")
+            _rehash_status(root / "seed_42" / "standard_lora")
+            with self.assertRaisesRegex(ValueError, "non-finite JSON number"):
+                validate_smoke_root(root, expected_conditions=PRIMARY_CONDITIONS, canonical_dir=Path(tmp) / "canonical_v1")
+
     def test_validator_rejects_prediction_manifest_binding_and_bad_class_prior_log(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = _create_smoke_root(Path(tmp) / "binding")
@@ -258,6 +335,32 @@ class Stage2ValidationTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "class-prior"):
                 validate_smoke_root(root, expected_conditions=PRIMARY_CONDITIONS, canonical_dir=Path(tmp) / "canonical_v1")
 
+    def test_validator_rejects_manifest_identity_only_spoofed_in_method_audit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = _create_smoke_root(Path(tmp) / "spoof")
+            audit = root / "seed_42" / "standard_lora" / "data_access.jsonl"
+            write_jsonl(
+                audit,
+                [
+                    {"event": "dataset_access", "dataset": "hans", "split": "evaluation", "purpose": "manifest_identity_only"},
+                    {"event": "final_evaluation_start", "dataset": "hans", "split": None, "purpose": "boundary"},
+                    {"event": "dataset_access", "dataset": "hans", "split": "evaluation", "purpose": "final"},
+                ],
+            )
+            _rehash_status(root / "seed_42" / "standard_lora")
+            with self.assertRaisesRegex(ValueError, "manifest_identity_only"):
+                validate_smoke_root(root, expected_conditions=PRIMARY_CONDITIONS, canonical_dir=Path(tmp) / "canonical_v1")
+
+    def test_validator_rejects_invalid_root_manifest_identity_audit_schema(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = _create_smoke_root(Path(tmp) / "root-audit")
+            write_jsonl(
+                root / "manifests" / "data_access.jsonl",
+                [{"event": "dataset_access", "dataset": "hans", "split": "evaluation", "purpose": "final"}],
+            )
+            with self.assertRaisesRegex(ValueError, "manifest identity audit"):
+                validate_smoke_root(root, expected_conditions=PRIMARY_CONDITIONS, canonical_dir=Path(tmp) / "canonical_v1")
+
     def test_repeat_tolerance_is_inclusive_at_half_percentage_point(self):
         report = compare_metric_values(0.400, 0.405, tolerance=0.005)
         self.assertTrue(report["within_tolerance"])
@@ -266,7 +369,7 @@ class Stage2ValidationTest(unittest.TestCase):
     def test_repeat_comparison_uses_hans_non_entailment_and_requires_frozen_provenance(self):
         with tempfile.TemporaryDirectory() as tmp:
             primary = _create_smoke_root(Path(tmp) / "primary", mnli_accuracy=0.80)
-            repeat = _create_smoke_root(Path(tmp) / "repeat", mnli_accuracy=0.70)
+            repeat = _repeat_root(Path(tmp) / "repeat", mnli_accuracy=0.70)
             report = compare_a100_repeat(primary, repeat)
             self.assertTrue(report["primary_metric"]["within_tolerance"])
             self.assertEqual(0.80, report["mnli_diagnostic"]["primary"])
@@ -279,7 +382,7 @@ class Stage2ValidationTest(unittest.TestCase):
     def test_repeat_comparison_rejects_a_manifest_not_bound_to_its_root(self):
         with tempfile.TemporaryDirectory() as tmp:
             primary = _create_smoke_root(Path(tmp) / "primary")
-            repeat = _create_smoke_root(Path(tmp) / "repeat")
+            repeat = _repeat_root(Path(tmp) / "repeat")
             manifest_path = repeat / "seed_42" / "full_sr" / "run_manifest.json"
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             manifest["protocol_sha256"] = HASH_A
@@ -288,6 +391,34 @@ class Stage2ValidationTest(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "does not bind"):
                 compare_a100_repeat(primary, repeat)
+
+    def test_repeat_comparison_requires_a100_root_identities_and_full_validation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            primary = _create_smoke_root(Path(tmp) / "primary")
+            wrong_mode = _repeat_root(Path(tmp) / "mode", mode="primary")
+            with self.assertRaisesRegex(ValueError, "mode"):
+                compare_a100_repeat(primary, wrong_mode)
+
+            wrong_matrix = _repeat_root(Path(tmp) / "matrix", conditions=PRIMARY_CONDITIONS)
+            with self.assertRaisesRegex(ValueError, "condition"):
+                compare_a100_repeat(primary, wrong_matrix)
+
+            wrong_environment = _repeat_root(Path(tmp) / "environment", smoke_environment="local_rtx5080")
+            with self.assertRaisesRegex(ValueError, "environment"):
+                compare_a100_repeat(primary, wrong_environment)
+
+            wrong_gpu = _repeat_root(Path(tmp) / "gpu", environment="NVIDIA T4")
+            with self.assertRaisesRegex(ValueError, "A100"):
+                compare_a100_repeat(primary, wrong_gpu)
+
+            tampered = _repeat_root(Path(tmp) / "tampered")
+            predictions = tampered / "seed_42" / "full_sr" / "hans_predictions.jsonl"
+            rows = json.loads("[" + ",".join(predictions.read_text(encoding="utf-8").splitlines()) + "]")
+            rows[0]["predicted_label"] = "non-entailment"
+            write_jsonl(predictions, rows)
+            _rehash_status(tampered / "seed_42" / "full_sr")
+            with self.assertRaisesRegex(ValueError, "HANS metrics"):
+                compare_a100_repeat(primary, tampered)
 
     def test_cli_writes_reports_without_importing_ml_dependencies_for_help(self):
         help_result = subprocess.run(
@@ -309,6 +440,21 @@ class Stage2ValidationTest(unittest.TestCase):
             self.assertEqual(0, result.returncode, result.stderr)
             self.assertTrue((root / "stage2_validation.json").is_file())
             self.assertTrue((root / "stage2_validation.md").is_file())
+
+    def test_cli_includes_repeat_comparison_in_written_reports(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            primary = _create_smoke_root(Path(tmp) / "primary")
+            repeat = _repeat_root(Path(tmp) / "repeat")
+            result = subprocess.run(
+                [sys.executable, "validate_stage2_smoke.py", "--root", str(primary), "--conditions", *PRIMARY_CONDITIONS, "--compare-repeat", str(repeat)],
+                cwd=ROOT,
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            report = json.loads((primary / "stage2_validation.json").read_text(encoding="utf-8"))
+            self.assertEqual("pass", report["repeat_comparison"]["state"])
+            self.assertIn("A100 Repeat", (primary / "stage2_validation.md").read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":
