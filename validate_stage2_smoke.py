@@ -42,7 +42,7 @@ def main(argv: list[str] | None = None) -> int:
     write_json(args.root / "stage2_validation.json", report)
     (args.root / "stage2_validation.md").write_text(_markdown(report), encoding="utf-8", newline="\n")
     print(report["state"])
-    return 0
+    return 0 if report["state"] == "pass" else 1
 
 
 if __name__ == "__main__":

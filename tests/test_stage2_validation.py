@@ -110,7 +110,10 @@ def _create_smoke_root(
     root = Path(base) / "smoke"
     manifests = root / "manifests"
     manifests.mkdir(parents=True)
-    write_json(manifests / "data_manifest.json", {"schema_version": "data_manifest_v1"})
+    write_json(
+        manifests / "data_manifest.json",
+        {"schema_version": "data_manifest_v1", "data_seed": 42, "hans_split_seed": 42},
+    )
     write_json(
         manifests / "environment_manifest.json",
         {"schema_version": "environment_manifest_v1", "gpu": environment, "python": "3.11"},
@@ -158,7 +161,10 @@ def _create_smoke_root(
     checkpoint.parent.mkdir(parents=True)
     checkpoint.write_bytes(b"shared checkpoint")
     checkpoint_hash = sha256_file(checkpoint)
-    write_json(shared / "config.json", {"training_seed": 42, "output_dir": str(shared)})
+    write_json(
+        shared / "config.json",
+        {"data_seed": 42, "hans_split_seed": 42, "training_seed": 42, "output_dir": str(shared)},
+    )
     shared_manifest = _manifest(
         None, protocol_hash=protocol_hash, data_hash=data_hash, environment_hash=environment_hash
     )
@@ -184,7 +190,16 @@ def _create_smoke_root(
     for method in conditions:
         run = seed / method
         run.mkdir(parents=True)
-        write_json(run / "config.json", {"training_seed": 42, "method_tag": method, "output_dir": str(run)})
+        write_json(
+            run / "config.json",
+            {
+                "data_seed": 42,
+                "hans_split_seed": 42,
+                "training_seed": 42,
+                "method_tag": method,
+                "output_dir": str(run),
+            },
+        )
         manifest = _manifest(
             method,
             None if method == "standard_lora" else shared_ref,
@@ -209,8 +224,8 @@ def _create_smoke_root(
         write_jsonl(
             run / "data_access.jsonl",
             [
-                {"sequence": 0, "event": "final_evaluation_start", "dataset": "hans", "split": None, "purpose": "boundary"},
-                {"sequence": 1, "event": "dataset_access", "dataset": "hans", "split": "evaluation", "purpose": "final"},
+                {"sequence": 0, "timestamp": "2026-08-08T00:00:00+00:00", "event": "final_evaluation_start", "dataset": "hans", "split": None, "purpose": "boundary"},
+                {"sequence": 1, "timestamp": "2026-08-08T00:00:01+00:00", "event": "dataset_access", "dataset": "hans", "split": "evaluation", "purpose": "final"},
             ],
         )
         write_jsonl(run / "hans_predictions.jsonl", rows)
@@ -241,8 +256,8 @@ class Stage2ValidationTest(unittest.TestCase):
             write_jsonl(
                 root / "seed_42" / "standard_lora" / "data_access.jsonl",
                 [
-                    {"event": "dataset_access", "dataset": "hans", "split": "evaluation", "purpose": "final"},
-                    {"event": "final_evaluation_start", "dataset": "hans", "split": None, "purpose": "boundary"},
+                    {"sequence": 0, "timestamp": "2026-08-08T00:00:00+00:00", "event": "dataset_access", "dataset": "hans", "split": "evaluation", "purpose": "final"},
+                    {"sequence": 1, "timestamp": "2026-08-08T00:00:01+00:00", "event": "final_evaluation_start", "dataset": "hans", "split": None, "purpose": "boundary"},
                 ],
             )
             _rehash_status(root / "seed_42" / "standard_lora")
@@ -313,7 +328,7 @@ class Stage2ValidationTest(unittest.TestCase):
 
             root = _create_smoke_root(Path(tmp) / "jsonl")
             audit = root / "seed_42" / "standard_lora" / "data_access.jsonl"
-            audit.write_text('{"event":"final_evaluation_start","dataset":"hans","split":null,"purpose":"boundary"}\n{"event":"dataset_access","dataset":"hans","split":"evaluation","purpose":"final","nested":{"bad":-1e9999}}\n', encoding="utf-8")
+            audit.write_text('{"sequence":0,"timestamp":"2026-08-08T00:00:00+00:00","event":"final_evaluation_start","dataset":"hans","split":null,"purpose":"boundary"}\n{"sequence":1,"timestamp":"2026-08-08T00:00:01+00:00","event":"dataset_access","dataset":"hans","split":"evaluation","purpose":"final","nested":{"bad":-1e9999}}\n', encoding="utf-8")
             _rehash_status(root / "seed_42" / "standard_lora")
             with self.assertRaisesRegex(ValueError, "non-finite JSON number"):
                 validate_smoke_root(root, expected_conditions=PRIMARY_CONDITIONS, canonical_dir=Path(tmp) / "canonical_v1")
@@ -342,14 +357,33 @@ class Stage2ValidationTest(unittest.TestCase):
             write_jsonl(
                 audit,
                 [
-                    {"event": "dataset_access", "dataset": "hans", "split": "evaluation", "purpose": "manifest_identity_only"},
-                    {"event": "final_evaluation_start", "dataset": "hans", "split": None, "purpose": "boundary"},
-                    {"event": "dataset_access", "dataset": "hans", "split": "evaluation", "purpose": "final"},
+                    {"sequence": 0, "timestamp": "2026-08-08T00:00:00+00:00", "event": "dataset_access", "dataset": "hans", "split": "evaluation", "purpose": "manifest_identity_only"},
+                    {"sequence": 1, "timestamp": "2026-08-08T00:00:01+00:00", "event": "final_evaluation_start", "dataset": "hans", "split": None, "purpose": "boundary"},
+                    {"sequence": 2, "timestamp": "2026-08-08T00:00:02+00:00", "event": "dataset_access", "dataset": "hans", "split": "evaluation", "purpose": "final"},
                 ],
             )
             _rehash_status(root / "seed_42" / "standard_lora")
             with self.assertRaisesRegex(ValueError, "manifest_identity_only"):
                 validate_smoke_root(root, expected_conditions=PRIMARY_CONDITIONS, canonical_dir=Path(tmp) / "canonical_v1")
+
+    def test_validator_rejects_malformed_method_audit_marker_evaluation_sequence_and_timestamp(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cases = [
+                ("marker-event", 0, "event", "dataset_access", "final_evaluation_start"),
+                ("evaluation-purpose", 1, "purpose", "boundary", "official HANS evaluation"),
+                ("marker-schema", 0, "extra", "spoof", "marker schema"),
+                ("sequence", 1, "sequence", 0, "sequence"),
+                ("timestamp", 1, "timestamp", "2026-08-07T00:00:00+00:00", "timestamp"),
+            ]
+            for name, index, field, value, message in cases:
+                root = _create_smoke_root(Path(tmp) / name)
+                run = root / "seed_42" / "standard_lora"
+                rows = [json.loads(line) for line in (run / "data_access.jsonl").read_text(encoding="utf-8").splitlines()]
+                rows[index][field] = value
+                write_jsonl(run / "data_access.jsonl", rows)
+                _rehash_status(run)
+                with self.assertRaisesRegex(ValueError, message):
+                    validate_smoke_root(root, expected_conditions=PRIMARY_CONDITIONS, canonical_dir=Path(tmp) / "canonical_v1")
 
     def test_validator_rejects_invalid_root_manifest_identity_audit_schema(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -420,6 +454,28 @@ class Stage2ValidationTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "HANS metrics"):
                 compare_a100_repeat(primary, tampered)
 
+    def test_repeat_comparison_rejects_missing_commit_and_seed_on_either_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            primary = _create_smoke_root(Path(tmp) / "primary")
+            repeat = _repeat_root(Path(tmp) / "repeat")
+            primary_manifest = primary / "seed_42" / "standard_lora" / "run_manifest.json"
+            document = json.loads(primary_manifest.read_text(encoding="utf-8"))
+            document["git"].pop("commit")
+            write_json(primary_manifest, document)
+            _rehash_status(primary / "seed_42" / "standard_lora")
+            with self.assertRaisesRegex(ValueError, "git.commit"):
+                compare_a100_repeat(primary, repeat)
+
+            primary = _create_smoke_root(Path(tmp) / "primary-seed")
+            repeat = _repeat_root(Path(tmp) / "repeat-seed")
+            repeat_manifest = repeat / "seed_42" / "full_sr" / "run_manifest.json"
+            document = json.loads(repeat_manifest.read_text(encoding="utf-8"))
+            document["training_seed"] = None
+            write_json(repeat_manifest, document)
+            _rehash_status(repeat / "seed_42" / "full_sr")
+            with self.assertRaisesRegex(ValueError, "training_seed"):
+                compare_a100_repeat(primary, repeat)
+
     def test_cli_writes_reports_without_importing_ml_dependencies_for_help(self):
         help_result = subprocess.run(
             [sys.executable, "validate_stage2_smoke.py", "--help"],
@@ -455,6 +511,31 @@ class Stage2ValidationTest(unittest.TestCase):
             report = json.loads((primary / "stage2_validation.json").read_text(encoding="utf-8"))
             self.assertEqual("pass", report["repeat_comparison"]["state"])
             self.assertIn("A100 Repeat", (primary / "stage2_validation.md").read_text(encoding="utf-8"))
+
+    def test_cli_writes_failed_repeat_report_and_exits_nonzero(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            primary = _create_smoke_root(Path(tmp) / "primary")
+            repeat = _repeat_root(Path(tmp) / "repeat")
+            run = repeat / "seed_42" / "full_sr"
+            predictions = run / "hans_predictions.jsonl"
+            rows = [json.loads(line) for line in predictions.read_text(encoding="utf-8").splitlines()]
+            rows[1]["predicted_label"] = "entailment"
+            write_jsonl(predictions, rows)
+            metrics = json.loads((run / "metrics.json").read_text(encoding="utf-8"))
+            metrics["final"]["hans"] = aggregate_hans_predictions(rows)
+            write_json(run / "metrics.json", metrics)
+            _rehash_status(run)
+            result = subprocess.run(
+                [sys.executable, "validate_stage2_smoke.py", "--root", str(primary), "--conditions", *PRIMARY_CONDITIONS, "--compare-repeat", str(repeat)],
+                cwd=ROOT,
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(1, result.returncode, result.stderr)
+            report = json.loads((primary / "stage2_validation.json").read_text(encoding="utf-8"))
+            self.assertEqual("fail", report["state"])
+            self.assertEqual("fail", report["repeat_comparison"]["state"])
+            self.assertTrue((primary / "stage2_validation.md").is_file())
 
 
 if __name__ == "__main__":

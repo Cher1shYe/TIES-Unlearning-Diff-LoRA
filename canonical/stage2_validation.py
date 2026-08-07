@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
+from datetime import datetime
 import json
 import math
 from numbers import Real
 from pathlib import Path
+import re
 from typing import Any, Mapping, Sequence
 
 from canonical.artifacts import sha256_file
@@ -130,18 +132,60 @@ def _validate_manifest_identity_audit(events: Sequence[Mapping[str, Any]], *, so
 def _validate_method_audit(events: Sequence[Mapping[str, Any]], *, source: Path) -> None:
     marker_seen = False
     evaluation_seen = False
-    for event in events:
+    previous_timestamp = None
+    for sequence, event in enumerate(events):
+        if event.get("sequence") != sequence:
+            raise ValueError(f"method audit sequence must be continuous and ordered: {source}")
+        timestamp = event.get("timestamp")
+        if not isinstance(timestamp, str) or not timestamp:
+            raise ValueError(f"method audit timestamp must be non-empty: {source}")
+        try:
+            parsed_timestamp = datetime.fromisoformat(timestamp)
+        except ValueError as error:
+            raise ValueError(f"method audit timestamp is invalid: {source}") from error
+        if parsed_timestamp.tzinfo is None:
+            raise ValueError(f"method audit timestamp must include a timezone: {source}")
+        if previous_timestamp is not None and parsed_timestamp < previous_timestamp:
+            raise ValueError(f"method audit timestamp order is invalid: {source}")
+        previous_timestamp = parsed_timestamp
         if event.get("purpose") == "manifest_identity_only":
             raise ValueError(f"manifest_identity_only is only permitted in the root manifest audit: {source}")
-        if event.get("event") == "final_evaluation_start":
+        is_hans_evaluation = event.get("dataset") == "hans" and event.get("split") == "evaluation"
+        if is_hans_evaluation:
+            expected = {
+                "sequence": sequence,
+                "timestamp": timestamp,
+                "event": "dataset_access",
+                "dataset": "hans",
+                "split": "evaluation",
+                "purpose": "final",
+            }
+            if event != expected:
+                raise ValueError(f"method audit official HANS evaluation schema is invalid: {source}")
+            if not marker_seen:
+                raise ValueError(f"official HANS evaluation access before final_evaluation_start: {source}")
+            evaluation_seen = True
+            continue
+        is_marker_candidate = (
+            event.get("event") == "final_evaluation_start"
+            or event.get("purpose") == "boundary"
+            or (event.get("dataset") == "hans" and event.get("split") is None)
+        )
+        if is_marker_candidate:
+            expected = {
+                "sequence": sequence,
+                "timestamp": timestamp,
+                "event": "final_evaluation_start",
+                "dataset": "hans",
+                "split": None,
+                "purpose": "boundary",
+            }
+            if event != expected:
+                raise ValueError(f"method audit final_evaluation_start marker schema is invalid: {source}")
+            if marker_seen:
+                raise ValueError(f"method audit has multiple final_evaluation_start markers: {source}")
             marker_seen = True
             continue
-        is_hans_evaluation = event.get("dataset") == "hans" and event.get("split") == "evaluation"
-        if not is_hans_evaluation:
-            continue
-        if not marker_seen:
-            raise ValueError(f"official HANS evaluation access before final_evaluation_start: {source}")
-        evaluation_seen = True
     if not marker_seen or not evaluation_seen:
         raise ValueError(f"completed method lacks final_evaluation_start or official HANS evaluation: {source}")
 
@@ -154,6 +198,35 @@ def _manifest_checkpoint(manifest: Mapping[str, Any], *, path: Path) -> str:
     return checkpoint_hash.lower()
 
 
+def _require_seed(value: Any, *, name: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise ValueError(f"{name} must be a non-negative integer")
+    return value
+
+
+def _validate_manifest_provenance(
+    manifest: Mapping[str, Any],
+    config: Mapping[str, Any],
+    *,
+    training_seed: int,
+    common: Mapping[str, Any],
+    path: Path,
+) -> None:
+    git = _require_mapping(manifest.get("git"), name=f"git in {path}")
+    commit = git.get("commit")
+    if not isinstance(commit, str) or re.fullmatch(r"[0-9a-fA-F]{40}", commit) is None:
+        raise ValueError(f"git.commit must be a 40-character hexadecimal commit: {path}")
+    for field in ("data_seed", "hans_split_seed"):
+        manifest_value = _require_seed(manifest.get(field), name=f"{field} in {path}")
+        config_value = _require_seed(config.get(field), name=f"{field} in {path} config")
+        if manifest_value != common[field] or config_value != manifest_value:
+            raise ValueError(f"{field} provenance does not bind root manifest and config: {path}")
+    manifest_training_seed = _require_seed(manifest.get("training_seed"), name=f"training_seed in {path}")
+    config_training_seed = _require_seed(config.get("training_seed"), name=f"training_seed in {path} config")
+    if manifest_training_seed != training_seed or config_training_seed != manifest_training_seed:
+        raise ValueError(f"training_seed provenance does not bind run matrix and config: {path}")
+
+
 def _validate_method(
     run_dir: Path,
     *,
@@ -162,8 +235,11 @@ def _validate_method(
     common: Mapping[str, str],
 ) -> None:
     _check_success_status(run_dir, required_outputs=_METHOD_OUTPUTS)
-    _read_json(run_dir / "config.json")
+    config = _read_json(run_dir / "config.json")
     manifest = _read_json(run_dir / "run_manifest.json")
+    _validate_manifest_provenance(
+        manifest, config, training_seed=seed, common=common, path=run_dir / "run_manifest.json"
+    )
     if manifest.get("method_tag") != method or manifest.get("training_seed") != seed:
         raise ValueError(f"run manifest method/seed mismatch: {run_dir}")
     for key, expected in common.items():
@@ -197,13 +273,16 @@ def _validate_shared_checkpoint(seed_dir: Path, *, seed: int, common: Mapping[st
     if relative in _SHARED_OUTPUTS or Path(relative).is_absolute() or ".." in Path(relative).parts:
         raise ValueError(f"shared checkpoint path must be a distinct safe artifact: {shared_dir}")
     _check_success_status(shared_dir, required_outputs=(*_SHARED_OUTPUTS, relative))
-    _read_json(shared_dir / "config.json")
+    config = _read_json(shared_dir / "config.json")
     manifest = _read_json(shared_dir / "run_manifest.json")
     if manifest.get("role") != "shared_phase2" or manifest.get("training_seed") != seed:
         raise ValueError(f"shared Phase-2 run manifest mismatch: {shared_dir}")
     for key, expected in common.items():
         if manifest.get(key) != expected:
             raise ValueError(f"shared Phase-2 {key} does not bind the root artifact: {shared_dir}")
+    _validate_manifest_provenance(
+        manifest, config, training_seed=seed, common=common, path=shared_dir / "run_manifest.json"
+    )
     digest = reference.get("sha256")
     if not isinstance(digest, str):
         raise ValueError(f"invalid shared checkpoint reference: {shared_dir}")
@@ -240,12 +319,18 @@ def _root_common(root: Path) -> tuple[dict[str, str], dict[str, Any]]:
     environment = root / "manifests" / "environment_manifest.json"
     if not data.is_file() or not environment.is_file():
         raise ValueError("smoke root lacks data or environment manifest")
-    _read_json(data)
+    data_manifest = _read_json(data)
+    data_seed = _require_seed(data_manifest.get("data_seed"), name="data_manifest.data_seed")
+    hans_split_seed = _require_seed(
+        data_manifest.get("hans_split_seed"), name="data_manifest.hans_split_seed"
+    )
     return (
         {
             "protocol_sha256": protocol_hash,
             "data_manifest_sha256": sha256_file(data),
             "environment_manifest_sha256": sha256_file(environment),
+            "data_seed": data_seed,
+            "hans_split_seed": hans_split_seed,
         },
         _read_json(environment),
     )
@@ -264,6 +349,8 @@ def validate_smoke_root(
         raise ValueError("smoke root and unique expected conditions are required")
     common, _environment = _root_common(root)
     commands = _read_json(root / "commands.json")
+    if commands.get("profile_name") != "stage2_smoke_v1":
+        raise ValueError("commands.json profile_name is not the frozen Stage 2 smoke profile")
     if commands.get("expected_condition_tags") != list(conditions):
         raise ValueError("commands.json condition tags do not match validation conditions")
     _validate_manifest_identity_audit(
