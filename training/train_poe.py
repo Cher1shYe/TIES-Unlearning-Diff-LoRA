@@ -34,7 +34,7 @@ from transformers import AutoTokenizer
 
 
 def train_poe_baseline(cfg: TrainConfig):
-    set_seed(cfg.seed)
+    set_seed(cfg.training_seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"\n[PoE Baseline] device={device}")
 

@@ -1,6 +1,7 @@
 import os
 import json
 import torch
+from dataclasses import asdict
 from torch.optim import AdamW
 from tqdm.auto import tqdm
 from transformers import (
@@ -17,28 +18,25 @@ except ImportError:
 
 from configs.config import TrainConfig, LoRAConfig
 from data.dataloader import (
-    set_seed, make_mnli_loaders, make_hans_loader, make_esnli_test_loader,
+    set_seed, make_mnli_loaders, make_hans_evaluation_loader, make_esnli_test_loader,
     make_anli_test_loader, make_snli_hard_test_loader,
 )
 from models.surgery import inject_ties_unlearn_lora
 from utils.optim_utils import _split_params, _make_scaler, _amp_enabled
 from training.evaluate import eval_mnli, eval_hans, eval_esnli, eval_anli, eval_snli_hard
+from canonical.artifacts import sha256_file, write_json, write_jsonl
 
-def train_single_lora_baseline(cfg: TrainConfig):
+def train_single_lora_baseline(cfg: TrainConfig, *, method_tag=None):
     """
     Standard single LoRA training (no N path, no TIES merge).
     Uses the same pos_rank so the comparison is fair.
     """
-    set_seed(cfg.seed)
+    set_seed(cfg.training_seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"\n[Baseline] device={device}")
 
     tok = AutoTokenizer.from_pretrained(cfg.model_name, use_fast=True)
     train_loader, val_loader = make_mnli_loaders(cfg, tok)
-    hans_loader = make_hans_loader(cfg, tok)
-    esnli_loader = make_esnli_test_loader(cfg, tok)
-    anli_loader = make_anli_test_loader(cfg, tok)
-    snli_hard_loader = make_snli_hard_test_loader(cfg, tok)
 
     model = AutoModelForSequenceClassification.from_pretrained(
         cfg.model_name, num_labels=cfg.num_labels,
@@ -101,8 +99,43 @@ def train_single_lora_baseline(cfg: TrainConfig):
         val = eval_mnli(model, val_loader, device)["mnli_accuracy"]
         print(f"  Baseline Ep{ep+1}: loss={avg:.4f} val_acc={val:.4f}")
 
+    run_dir = os.path.join(cfg.output_dir, cfg.experiment_name if method_tag else "baseline_single_lora")
+    os.makedirs(run_dir, exist_ok=True)
+    final_checkpoint_hash = None
+    if method_tag is not None:
+        state_dir = os.path.join(run_dir, "checkpoints")
+        os.makedirs(state_dir, exist_ok=True)
+        final_state_path = os.path.join(state_dir, "final_model_state.pt")
+        torch.save(
+            {
+                "model_state_dict": model.state_dict(),
+                "config": asdict(cfg),
+                "method_tag": method_tag,
+                "training_seed": cfg.training_seed,
+            },
+            final_state_path,
+        )
+        final_checkpoint_hash = sha256_file(final_state_path)
+
+    hans_loader = make_hans_evaluation_loader(cfg, tok)
+    esnli_loader = make_esnli_test_loader(cfg, tok)
+    anli_loader = make_anli_test_loader(cfg, tok)
+    snli_hard_loader = make_snli_hard_test_loader(cfg, tok)
     bl_mnli = eval_mnli(model, val_loader, device)
-    bl_hans = eval_hans(model, hans_loader, device)
+    hans_predictions = None
+    if method_tag is not None:
+        bl_hans, hans_predictions = eval_hans(
+            model,
+            hans_loader,
+            device,
+            prediction_context={
+                "training_seed": cfg.training_seed,
+                "method_tag": method_tag,
+                "checkpoint_hash": final_checkpoint_hash,
+            },
+        )
+    else:
+        bl_hans = eval_hans(model, hans_loader, device)
     bl_esnli = eval_esnli(model, esnli_loader, device)
     bl_anli = eval_anli(model, anli_loader, device)
     bl_snli_hard = eval_snli_hard(model, snli_hard_loader, device)
@@ -114,11 +147,19 @@ def train_single_lora_baseline(cfg: TrainConfig):
         "esnli": bl_esnli,
         "anli": bl_anli,
         "snli_hard": bl_snli_hard,
+        "config": asdict(cfg),
+        "checkpoint_provenance": {
+            "source_phase2_checkpoint_hash": None,
+            "final_checkpoint_hash": final_checkpoint_hash,
+        },
     }
 
-    run_dir = os.path.join(cfg.output_dir, "baseline_single_lora")
-    os.makedirs(run_dir, exist_ok=True)
-    with open(os.path.join(run_dir, "metrics.json"), "w", encoding="utf-8") as f:
-        json.dump(metrics, f, indent=2, ensure_ascii=False)
+    if method_tag is not None:
+        write_json(os.path.join(run_dir, "metrics.json"), metrics)
+        write_jsonl(os.path.join(run_dir, "hans_predictions.jsonl"), hans_predictions)
+        write_json(os.path.join(run_dir, "selected_layers.json"), {})
+    else:
+        with open(os.path.join(run_dir, "metrics.json"), "w", encoding="utf-8") as f:
+            json.dump(metrics, f, indent=2, ensure_ascii=False)
 
     return metrics

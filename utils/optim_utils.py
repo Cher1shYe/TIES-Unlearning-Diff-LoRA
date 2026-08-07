@@ -1,7 +1,7 @@
 import os
 import torch
 import torch.nn as nn
-from typing import Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 from torch.optim import AdamW
 
 from models.ties_lora import TIESUnlearnLoRALinear
@@ -58,6 +58,7 @@ def _save_checkpoint(
     path: str,
     history: Dict,
     phase_metrics: Dict,
+    metadata: Optional[Dict[str, Any]] = None,
 ):
     """Saves the training state to a checkpoint file."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -67,9 +68,16 @@ def _save_checkpoint(
         "scheduler_state_dict": scheduler.state_dict(),
         "epoch": epoch,
         "phase": phase,
+        "completed_phase": phase,
         "history": history,
         "phase_metrics": phase_metrics,
+        "schema_version": "training_checkpoint_v2",
     }
+    if metadata:
+        reserved = set(checkpoint) & set(metadata)
+        if reserved:
+            raise ValueError(f"checkpoint metadata uses reserved keys: {sorted(reserved)}")
+        checkpoint.update(metadata)
     torch.save(checkpoint, path)
     print(f"[Checkpoint] Saved checkpoint for Phase {phase}, Epoch {epoch} to {path}")
 
@@ -100,3 +108,23 @@ def _load_checkpoint(
         checkpoint["history"],
         checkpoint["phase_metrics"],
     )
+
+def _load_model_checkpoint(
+    model: nn.Module,
+    path: str,
+    device: torch.device,
+) -> Dict[str, Any]:
+    """Load a canonical shared Phase-2 checkpoint without optimizer coupling."""
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Checkpoint file not found at {path}")
+    checkpoint = torch.load(path, map_location=device)
+    completed_phase = checkpoint.get("completed_phase", checkpoint.get("phase"))
+    if completed_phase != 2:
+        raise ValueError(
+            f"Canonical shared checkpoint must have completed Phase 2, got {completed_phase!r}."
+        )
+    if "model_state_dict" not in checkpoint:
+        raise ValueError("Canonical shared checkpoint is missing model_state_dict.")
+    model.load_state_dict(checkpoint["model_state_dict"])
+    print(f"[Checkpoint] Loaded shared Phase-2 model state from {path}")
+    return checkpoint
