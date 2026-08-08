@@ -21,6 +21,12 @@
 
 阶段 1 的验证状态不等于实验流水线已在真实 ML/GPU 环境中通过。当前 shell 缺少 PyTorch、Transformers、Datasets、NumPy 和 pytest；真实依赖、数据集、RTX 5080/A100、tiny-data 端到端训练、日志隔离和数值复现必须在阶段 2 验证。
 
+## Stage 2 预结果勘误（2026-08-08）
+
+本报告第 2 节第 2 项及第 4.2 节将 HANS `pairID` 作为 build/dev/evaluation 可直接全局比较的稳定 ID，属于阶段 1 未读取真实数据时的错误假设。阶段 2 首次真实预运行确认：train 与 evaluation 两个官方文件各自使用 `ex0` 至 `ex29999`，这些编号是源文件局部 ID，不能跨文件直接判重。
+
+更正后的契约是：原始 `exN` 只作为同一文件内的冻结 split/cap 排序键，以保持既定数据成员；全局 artifact 分别使用 `hans_train::exN` 与 `hans_evaluation::exN`。同时，`canonical_data_manifest_v3` 持久化不含 pair ID 的精确内容哈希及 ID/content 联合校验和，并要求分区内重复与分区间交集重算结果均为零。本勘误发生在任何成功 smoke 训练或 canonical 结果产生之前，不改变阶段 1 的 seed、80/20 比例、训练配置或模型行为；本报告顶部的 protocol SHA-256 仍是阶段 1 当时快照的历史记录。
+
 ## 2. 本阶段范围
 
 ### 已完成

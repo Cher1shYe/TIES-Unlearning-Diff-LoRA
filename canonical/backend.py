@@ -12,7 +12,11 @@ from canonical.artifacts import (
 )
 from canonical.access_audit import append_access_event
 from canonical.conditions import CanonicalCondition
-from canonical.data import sample_dataset
+from canonical.data import (
+    build_hans_content_integrity_manifest,
+    sample_dataset,
+    select_hans_evaluation_records,
+)
 from canonical.data_manifest import dataset_identity_entry
 from canonical.runner import CheckpointRef
 from configs.config import TrainConfig
@@ -109,29 +113,51 @@ class RealCanonicalBackend:
             event="dataset_access",
         )
         hans = make_hans_split_manifest(self.base_config)
-        hans_records = {
-            "build": [{"pairID": pair_id} for pair_id in hans["build_pair_ids"]],
-            "dev": [{"pairID": pair_id} for pair_id in hans["dev_pair_ids"]],
-            "evaluation": [
-                dict(record)
-                for record in hans.get(
-                    "evaluation_records",
-                    [{"pairID": pair_id} for pair_id in hans["evaluation_pair_ids"]],
-                )
-            ],
+        hans_source_records = {
+            "build": [dict(record) for record in hans["build_records"]],
+            "dev": [dict(record) for record in hans["dev_records"]],
+            "evaluation": [dict(record) for record in hans["evaluation_records"]],
         }
-        hans_entries = {
-            name: dataset_identity_entry(
-                hans_records[name],
+
+        def artifact_record(source_record: Mapping[str, Any]) -> dict[str, Any]:
+            record = dict(source_record)
+            artifact_id = record.pop("canonical_pair_id", None)
+            if not isinstance(artifact_id, str) or not artifact_id:
+                raise ValueError("HANS source record lacks a qualified artifact identity")
+            record["pairID"] = artifact_id
+            return record
+
+        hans_artifact_records = {
+            name: [artifact_record(record) for record in records]
+            for name, records in hans_source_records.items()
+        }
+        selected_evaluation_source, _ = select_hans_evaluation_records(
+            hans_source_records["evaluation"],
+            self.base_config.hans_eval_size,
+            self.base_config.data_seed,
+        )
+        selected_evaluation_artifacts = [
+            artifact_record(record) for record in selected_evaluation_source
+        ]
+        hans_entries = {}
+        for name in ("build", "dev", "evaluation"):
+            hans_entries[name] = dataset_identity_entry(
+                hans_artifact_records[name],
                 source="tommccoy1/hans",
                 split=name,
                 preferred_id_fields=("pairID",),
                 selected_limit=(self.base_config.hans_eval_size if name == "evaluation" else None),
                 seed=self.base_config.data_seed,
                 strata_fields=("gold_label", "heuristic", "subcase") if name == "evaluation" else (),
+                selected_records=(selected_evaluation_artifacts if name == "evaluation" else None),
             )
-            for name in ("build", "dev", "evaluation")
-        }
+        hans_entries["content_integrity"] = build_hans_content_integrity_manifest(
+            hans_source_records,
+            {
+                name: hans_entries[name]["full_ids"]
+                for name in ("build", "dev", "evaluation")
+            },
+        )
         from data.dataloader import (
             load_anli_raw,
             load_esnli_raw,
@@ -163,8 +189,8 @@ class RealCanonicalBackend:
             split="evaluation",
             purpose="manifest_identity_only",
             event="manifest_identity_summary",
-            identity_counts={name: entry["full_count"] for name, entry in hans_entries.items()},
-            identity_checksums={name: entry["full_ids_sha256"] for name, entry in hans_entries.items()},
+            identity_counts={name: hans_entries[name]["full_count"] for name in ("build", "dev", "evaluation")},
+            identity_checksums={name: hans_entries[name]["full_ids_sha256"] for name in ("build", "dev", "evaluation")},
         )
         smoke_caps = (
             self.base_config.hans_eval_size,
@@ -174,7 +200,7 @@ class RealCanonicalBackend:
             self.base_config.wanli_eval_size,
         )
         data_manifest = {
-            "schema_version": "canonical_data_manifest_v2",
+            "schema_version": "canonical_data_manifest_v3",
             "scope": "stage2_smoke" if any(cap is not None for cap in smoke_caps) else "canonical_v1",
             "data_seed": 42,
             "hans_split_seed": 42,

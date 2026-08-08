@@ -21,7 +21,11 @@ from canonical.access_audit import (
 )
 from canonical.artifacts import read_jsonl, sha256_file, write_json, write_jsonl
 from canonical.backend import RealCanonicalBackend
-from canonical.data import deterministic_cap_records, stable_record_id
+from canonical.data import (
+    deterministic_cap_records,
+    select_hans_evaluation_records,
+    stable_record_id,
+)
 from canonical.data_manifest import dataset_identity_entry
 from canonical.runner import CheckpointRef, run_core
 from configs.config import TrainConfig
@@ -29,16 +33,20 @@ from configs.config import TrainConfig
 
 HANS_ROWS = [
     {
-        "pairID": f"hans_evaluation::{label[:1]}-{heuristic[:2]}-{index}",
+        "pairID": f"ex{global_index}",
+        "canonical_pair_id": f"hans_evaluation::ex{global_index}",
         "gold_label": label,
         "heuristic": heuristic,
         "subcase": f"{heuristic}-case",
         "sentence1": f"premise-{label}-{heuristic}-{index}",
         "sentence2": f"hypothesis-{label}-{heuristic}-{index}",
     }
-    for label in ("entailment", "non-entailment")
-    for heuristic in ("lexical_overlap", "subsequence", "constituent")
-    for index in range(4)
+    for global_index, (label, heuristic, index) in enumerate(
+        (label, heuristic, index)
+        for label in ("entailment", "non-entailment")
+        for heuristic in ("lexical_overlap", "subsequence", "constituent")
+        for index in range(4)
+    )
 ]
 
 
@@ -49,6 +57,45 @@ MANIFEST_ROWS = [
 
 
 class DeterministicEvaluationSelectionTest(unittest.TestCase):
+    def test_hans_384_cap_preserves_exact_prefixed_raw_key_membership(self):
+        rows = [
+            {
+                "pairID": f"ex{index}",
+                "canonical_pair_id": f"hans_evaluation::ex{index}",
+                "gold_label": ("entailment", "non-entailment")[index % 2],
+                "heuristic": ("lexical_overlap", "subsequence", "constituent")[index % 3],
+                "subcase": f"case-{index % 6}",
+            }
+            for index in range(30_000)
+        ]
+        pre_fix_rows, pre_fix_local_ids = deterministic_cap_records(
+            rows,
+            384,
+            42,
+            ("gold_label", "heuristic", "subcase"),
+            preferred_fields=("pairID",),
+        )
+
+        selected, artifact_ids = select_hans_evaluation_records(rows, 384, 42)
+
+        self.assertEqual(384, len(selected))
+        self.assertEqual(pre_fix_local_ids, [row["pairID"] for row in selected])
+        self.assertEqual(
+            [row["canonical_pair_id"] for row in pre_fix_rows],
+            artifact_ids,
+        )
+        qualified_key_rows, _ = deterministic_cap_records(
+            rows,
+            384,
+            42,
+            ("gold_label", "heuristic", "subcase"),
+            preferred_fields=("canonical_pair_id",),
+        )
+        self.assertNotEqual(
+            pre_fix_local_ids,
+            [row["pairID"] for row in qualified_key_rows],
+        )
+
     def test_hans_cap_is_order_independent_and_covers_label_heuristic_strata(self):
         selected_a, ids_a = deterministic_cap_records(
             HANS_ROWS,
@@ -209,7 +256,7 @@ class DataIdentityManifestTest(unittest.TestCase):
         ):
             self.assertTrue(callable(getattr(dataloader, name)))
 
-    def test_backend_writes_v2_groups_without_network_when_loaders_are_injected(self):
+    def test_backend_writes_v3_groups_without_network_when_loaders_are_injected(self):
         class FixtureRows:
             def __init__(self, rows):
                 self.rows = [dict(row) for row in rows]
@@ -235,20 +282,41 @@ class DataIdentityManifestTest(unittest.TestCase):
             "validation_matched": FixtureRows([{"idx": f"validation-{index}"} for index in range(4)]),
         }
         hans_manifest = {
-            "build_pair_ids": ["hans_train::build-1"],
-            "dev_pair_ids": ["hans_train::dev-1"],
+            "build_pair_ids": ["hans_train::ex0"],
+            "dev_pair_ids": ["hans_train::ex1"],
             "evaluation_pair_ids": [
-                "hans_evaluation::eval-1",
-                "hans_evaluation::eval-2",
-                "hans_evaluation::eval-3",
-                "hans_evaluation::eval-4",
+                "hans_evaluation::ex0",
+                "hans_evaluation::ex1",
+                "hans_evaluation::ex2",
+                "hans_evaluation::ex3",
             ],
+            "build_records": [{
+                "pairID": "ex0",
+                "canonical_pair_id": "hans_train::ex0",
+                "gold_label": "entailment",
+                "heuristic": "lexical_overlap",
+                "subcase": "train-build-case",
+                "sentence1": "train-build-premise",
+                "sentence2": "train-build-hypothesis",
+            }],
+            "dev_records": [{
+                "pairID": "ex1",
+                "canonical_pair_id": "hans_train::ex1",
+                "gold_label": "non-entailment",
+                "heuristic": "subsequence",
+                "subcase": "train-dev-case",
+                "sentence1": "train-dev-premise",
+                "sentence2": "train-dev-hypothesis",
+            }],
             "evaluation_records": [
                 {
-                    "pairID": f"hans_evaluation::eval-{index}",
+                    "pairID": f"ex{index - 1}",
+                    "canonical_pair_id": f"hans_evaluation::ex{index - 1}",
                     "gold_label": label,
                     "heuristic": heuristic,
                     "subcase": f"{heuristic}-case",
+                    "sentence1": f"evaluation-premise-{index}",
+                    "sentence2": f"evaluation-hypothesis-{index}",
                 }
                 for index, (label, heuristic) in enumerate(
                     (
@@ -290,23 +358,31 @@ class DataIdentityManifestTest(unittest.TestCase):
             backend.initialize_manifests(output, Path(tmp) / "protocol.md")
 
             manifest = json.loads((output / "manifests" / "data_manifest.json").read_text(encoding="utf-8"))
-            self.assertEqual("canonical_data_manifest_v2", manifest["schema_version"])
+            self.assertEqual("canonical_data_manifest_v3", manifest["schema_version"])
             self.assertEqual("stage2_smoke", manifest["scope"])
             self.assertEqual({"train", "validation_matched"}, set(manifest["mnli"]))
-            self.assertEqual({"build", "dev", "evaluation"}, set(manifest["hans"]))
+            self.assertEqual(
+                {"build", "dev", "evaluation", "content_integrity"},
+                set(manifest["hans"]),
+            )
             self.assertEqual({"esnli", "anli", "snli_hard", "wanli"}, set(manifest["ood"]))
             self.assertEqual(4, manifest["mnli"]["train"]["full_count"])
             self.assertEqual(2, manifest["mnli"]["train"]["selected_count"])
-            expected_hans_entry = dataset_identity_entry(
-                hans_manifest["evaluation_records"],
-                source="tommccoy1/hans",
-                split="evaluation",
-                preferred_id_fields=("pairID",),
-                selected_limit=2,
-                seed=42,
-                strata_fields=("gold_label", "heuristic", "subcase"),
+            selected_records, expected_hans_ids = select_hans_evaluation_records(
+                hans_manifest["evaluation_records"], 2, 42
             )
-            self.assertEqual(expected_hans_entry["selected_ids"], manifest["hans"]["evaluation"]["selected_ids"])
+            self.assertEqual(
+                expected_hans_ids,
+                manifest["hans"]["evaluation"]["selected_ids"],
+            )
+            self.assertEqual(
+                [row["pairID"] for row in selected_records],
+                [identity.removeprefix("hans_evaluation::") for identity in expected_hans_ids],
+            )
+            self.assertEqual(
+                "hans_content_integrity_v1",
+                manifest["hans"]["content_integrity"]["schema_version"],
+            )
             self.assertEqual("manifest_identity_only", read_jsonl(output / "manifests" / "data_access.jsonl")[0]["purpose"])
 
 
@@ -445,8 +521,12 @@ class StructuredDataAccessAuditTest(unittest.TestCase):
         with patch.object(dataloader, "load_dataset", return_value=RawDataset("ex0")):
             evaluation = dataloader._load_hans_dataset("eval")
 
-        self.assertEqual("hans_train::ex0", train.rows[0]["pairID"])
-        self.assertEqual("hans_evaluation::ex0", evaluation.rows[0]["pairID"])
+        self.assertEqual("ex0", train.rows[0]["pairID"])
+        self.assertEqual("hans_train::ex0", train.rows[0]["canonical_pair_id"])
+        self.assertEqual("ex0", evaluation.rows[0]["pairID"])
+        self.assertEqual(
+            "hans_evaluation::ex0", evaluation.rows[0]["canonical_pair_id"]
+        )
 
     def test_hans_evaluation_loader_passes_pair_id_preference_to_capping(self):
         dataloader = self._dataloader_module_with_dependency_stubs()
@@ -481,7 +561,8 @@ class StructuredDataAccessAuditTest(unittest.TestCase):
             raise RuntimeError("capping observed")
 
         rows = [{
-            "pairID": "hans_evaluation::pair-1",
+            "pairID": "ex1",
+            "canonical_pair_id": "hans_evaluation::ex1",
             "gold_label": "entailment",
             "heuristic": "lexical_overlap",
             "subcase": "case",
@@ -500,7 +581,7 @@ class StructuredDataAccessAuditTest(unittest.TestCase):
             captured["args"][1:],
         )
         self.assertEqual(
-            "hans_evaluation::pair-1",
+            "ex1",
             captured["args"][0].rows[0]["pairID"],
         )
 
@@ -543,7 +624,8 @@ class StructuredDataAccessAuditTest(unittest.TestCase):
 
         rows = [
             {
-                "pairID": f"hans_evaluation::ex{index}",
+                "pairID": f"ex{index}",
+                "canonical_pair_id": f"hans_evaluation::ex{index}",
                 "gold_label": label,
                 "heuristic": heuristic,
                 "subcase": f"case-{index}",

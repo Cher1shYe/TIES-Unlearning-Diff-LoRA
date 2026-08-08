@@ -74,6 +74,54 @@ def _hans_identity_entry(ids):
     }
 
 
+def _hans_content_integrity(hans_entries):
+    content = {
+        "build": ["1" * 64],
+        "dev": ["2" * 64],
+        "evaluation": ["3" * 64, "4" * 64],
+    }
+    partitions = {}
+    for name, hashes in content.items():
+        ordered_checksum = sha256(
+            json.dumps(
+                hashes,
+                ensure_ascii=False,
+                allow_nan=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        joint = list(zip(hans_entries[name]["full_ids"], hashes))
+        joint_checksum = sha256(
+            json.dumps(
+                joint,
+                ensure_ascii=False,
+                allow_nan=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        partitions[name] = {
+            "count": len(hashes),
+            "content_sha256": hashes,
+            "content_sha256_ordered_checksum": ordered_checksum,
+            "source_id_content_joint_checksum": joint_checksum,
+            "duplicate_content_count": 0,
+        }
+    return {
+        "schema_version": "hans_content_integrity_v1",
+        "algorithm": "sha256_canonical_json_utf8_v1",
+        "fields": ["gold_label", "premise", "hypothesis", "heuristic", "subcase"],
+        "excludes_pair_id": True,
+        "partitions": partitions,
+        "overlap_counts": {
+            "build_dev": 0,
+            "build_evaluation": 0,
+            "dev_evaluation": 0,
+        },
+    }
+
+
 def _write_success_status(directory, relative_outputs):
     write_json(
         directory / "status.json",
@@ -139,19 +187,21 @@ def _create_smoke_root(
     root = Path(base) / "smoke"
     manifests = root / "manifests"
     manifests.mkdir(parents=True)
+    hans_entries = {
+        "build": _hans_identity_entry(["hans_train::ex0"]),
+        "dev": _hans_identity_entry(["hans_train::ex1"]),
+        "evaluation": _hans_identity_entry(
+            ["hans_evaluation::ex0", "hans_evaluation::ex1"]
+        ),
+    }
+    hans_entries["content_integrity"] = _hans_content_integrity(hans_entries)
     write_json(
         manifests / "data_manifest.json",
         {
-            "schema_version": "data_manifest_v1",
+            "schema_version": "canonical_data_manifest_v3",
             "data_seed": 42,
             "hans_split_seed": 42,
-            "hans": {
-                "build": _hans_identity_entry(["hans_train::build-0"]),
-                "dev": _hans_identity_entry(["hans_train::dev-0"]),
-                "evaluation": _hans_identity_entry(
-                    ["hans_evaluation::ex0", "hans_evaluation::ex1"]
-                ),
-            },
+            "hans": hans_entries,
         },
     )
     write_json(
@@ -376,6 +426,15 @@ class Stage2ValidationTest(unittest.TestCase):
                 "hans_evaluation::hans_evaluation::ex0"
             )
 
+        def padded_suffix(entry):
+            entry["full_ids"][0] = entry["selected_ids"][0] = "hans_evaluation::ex00"
+
+        def signed_suffix(entry):
+            entry["full_ids"][0] = entry["selected_ids"][0] = "hans_evaluation::ex-1"
+
+        def delimiter_suffix(entry):
+            entry["full_ids"][0] = entry["selected_ids"][0] = "hans_evaluation::ex1::extra"
+
         def duplicate(entry):
             entry["full_ids"][1] = entry["selected_ids"][1] = entry["full_ids"][0]
 
@@ -384,7 +443,16 @@ class Stage2ValidationTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             for index, transform in enumerate(
-                (raw, wrong_namespace, double_qualified, duplicate, invalid_checksum)
+                (
+                    raw,
+                    wrong_namespace,
+                    double_qualified,
+                    padded_suffix,
+                    signed_suffix,
+                    delimiter_suffix,
+                    duplicate,
+                    invalid_checksum,
+                )
             ):
                 with self.subTest(transform=transform.__name__):
                     root = _create_smoke_root(Path(tmp) / f"manifest-{index}")
@@ -392,6 +460,7 @@ class Stage2ValidationTest(unittest.TestCase):
                     manifest = json.loads(path.read_text(encoding="utf-8"))
                     entry = manifest["hans"]["evaluation"]
                     transform(entry)
+                    del manifest["hans"]["content_integrity"]
                     if transform is not invalid_checksum:
                         digest = sha256(
                             json.dumps(
@@ -406,6 +475,111 @@ class Stage2ValidationTest(unittest.TestCase):
                     write_json(path, manifest)
 
                     with self.assertRaisesRegex(ValueError, "HANS manifest"):
+                        validate_smoke_root(
+                            root,
+                            expected_conditions=PRIMARY_CONDITIONS,
+                            canonical_dir=Path(tmp) / "canonical_v1",
+                        )
+
+    def test_validator_requires_v3_content_integrity_and_rejects_bound_tamper(self):
+        def missing(manifest):
+            del manifest["hans"]["content_integrity"]
+
+        def old_schema(manifest):
+            manifest["schema_version"] = "canonical_data_manifest_v2"
+
+        def wrong_fields(manifest):
+            manifest["hans"]["content_integrity"]["fields"][-1] = "pairID"
+
+        def bad_ordered_checksum(manifest):
+            manifest["hans"]["content_integrity"]["partitions"]["evaluation"][
+                "content_sha256_ordered_checksum"
+            ] = "0" * 64
+
+        def bad_joint_checksum(manifest):
+            manifest["hans"]["content_integrity"]["partitions"]["evaluation"][
+                "source_id_content_joint_checksum"
+            ] = "0" * 64
+
+        def duplicate_content_with_rebuilt_checksums(manifest):
+            integrity = manifest["hans"]["content_integrity"]
+            entry = integrity["partitions"]["evaluation"]
+            entry["content_sha256"][1] = entry["content_sha256"][0]
+            entry["content_sha256_ordered_checksum"] = sha256(
+                json.dumps(
+                    entry["content_sha256"],
+                    ensure_ascii=False,
+                    allow_nan=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+            pairs = list(
+                zip(
+                    manifest["hans"]["evaluation"]["full_ids"],
+                    entry["content_sha256"],
+                )
+            )
+            entry["source_id_content_joint_checksum"] = sha256(
+                json.dumps(
+                    pairs,
+                    ensure_ascii=False,
+                    allow_nan=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+
+        def overlap_content_with_rebuilt_checksums(manifest):
+            integrity = manifest["hans"]["content_integrity"]
+            entry = integrity["partitions"]["evaluation"]
+            entry["content_sha256"][0] = integrity["partitions"]["build"][
+                "content_sha256"
+            ][0]
+            entry["content_sha256_ordered_checksum"] = sha256(
+                json.dumps(
+                    entry["content_sha256"],
+                    ensure_ascii=False,
+                    allow_nan=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+            pairs = list(
+                zip(
+                    manifest["hans"]["evaluation"]["full_ids"],
+                    entry["content_sha256"],
+                )
+            )
+            entry["source_id_content_joint_checksum"] = sha256(
+                json.dumps(
+                    pairs,
+                    ensure_ascii=False,
+                    allow_nan=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+
+        transforms = (
+            missing,
+            old_schema,
+            wrong_fields,
+            bad_ordered_checksum,
+            bad_joint_checksum,
+            duplicate_content_with_rebuilt_checksums,
+            overlap_content_with_rebuilt_checksums,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            for index, transform in enumerate(transforms):
+                with self.subTest(transform=transform.__name__):
+                    root = _create_smoke_root(Path(tmp) / f"content-{index}")
+                    path = root / "manifests" / "data_manifest.json"
+                    manifest = json.loads(path.read_text(encoding="utf-8"))
+                    transform(manifest)
+                    write_json(path, manifest)
+
+                    with self.assertRaisesRegex(ValueError, "data manifest|HANS content"):
                         validate_smoke_root(
                             root,
                             expected_conditions=PRIMARY_CONDITIONS,

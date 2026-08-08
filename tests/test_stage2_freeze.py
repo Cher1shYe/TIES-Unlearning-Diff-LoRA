@@ -48,7 +48,8 @@ class CanonicalManifestBackend:
         def entry(group, name, count):
             if group == "hans":
                 namespace = "hans_evaluation" if name == "evaluation" else "hans_train"
-                values = [f"{namespace}::{name}-{index}" for index in range(count)]
+                offset = 1 if name == "dev" else 0
+                values = [f"{namespace}::ex{index + offset}" for index in range(count)]
             else:
                 values = [f"{name}-{index}" for index in range(count)]
             payload = json.dumps(values, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -57,15 +58,37 @@ class CanonicalManifestBackend:
             source, split, preferred, strata = provenance[(group, name)]
             selected_limit = count if group == "mnli" else None
             return {"source": source, "split": split, "id_strategy": "preferred_field_or_content_sha256", "preferred_id_fields": preferred, "strata_fields": strata, "selection_seed": 42, "selected_limit": selected_limit, "full_count": count, "selected_count": count, "full_ids": values, "selected_ids": values, "full_ids_sha256": digest, "selected_ids_sha256": digest}
+        hans_entries = {name: entry("hans", name, 1) for name in ("build", "dev", "evaluation")}
+        content_hashes = {"build": ["1" * 64], "dev": ["2" * 64], "evaluation": ["3" * 64]}
+        partitions = {}
+        for name, hashes in content_hashes.items():
+            ordered = json.dumps(hashes, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            joint = json.dumps(list(zip(hans_entries[name]["full_ids"], hashes)), ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            import hashlib
+            partitions[name] = {
+                "count": len(hashes),
+                "content_sha256": hashes,
+                "content_sha256_ordered_checksum": hashlib.sha256(ordered).hexdigest(),
+                "source_id_content_joint_checksum": hashlib.sha256(joint).hexdigest(),
+                "duplicate_content_count": 0,
+            }
+        hans_entries["content_integrity"] = {
+            "schema_version": "hans_content_integrity_v1",
+            "algorithm": "sha256_canonical_json_utf8_v1",
+            "fields": ["gold_label", "premise", "hypothesis", "heuristic", "subcase"],
+            "excludes_pair_id": True,
+            "partitions": partitions,
+            "overlap_counts": {"build_dev": 0, "build_evaluation": 0, "dev_evaluation": 0},
+        }
         write_json(
             manifests / "data_manifest.json",
             {
-                "schema_version": "canonical_data_manifest_v2",
+                "schema_version": "canonical_data_manifest_v3",
                 "scope": "canonical_v1",
                 "data_seed": 42,
                 "hans_split_seed": 42,
                 "mnli": {"train": entry("mnli", "train", 100000), "validation_matched": entry("mnli", "validation_matched", 5000)},
-                "hans": {name: entry("hans", name, 1) for name in ("build", "dev", "evaluation")},
+                "hans": hans_entries,
                 "ood": {name: entry("ood", name, 1) for name in ("esnli", "anli", "snli_hard", "wanli")},
             },
         )
@@ -496,7 +519,14 @@ class Stage2FreezeTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "disjoint"):
                 _strict_data_manifest(data)
 
-            for invalid_id in ("evaluation-0", "hans_train::evaluation-0"):
+            for invalid_id in (
+                "ex0",
+                "hans_train::ex2",
+                "hans_evaluation::hans_evaluation::ex0",
+                "hans_evaluation::ex00",
+                "hans_evaluation::ex-1",
+                "hans_evaluation::ex1::extra",
+            ):
                 with self.subTest(invalid_id=invalid_id):
                     data = json.loads(data_path.read_text(encoding="utf-8"))
                     evaluation = data["hans"]["evaluation"]
@@ -628,7 +658,23 @@ class Stage2FreezeTest(unittest.TestCase):
                 verify_freeze_bundle(freeze)
 
             data_path.write_bytes(original_data)
-            for invalid_id in ("evaluation-0", "hans_train::evaluation-0"):
+            data = json.loads(original_data)
+            content = data["hans"]["content_integrity"]
+            content["partitions"]["evaluation"]["source_id_content_joint_checksum"] = "0" * 64
+            write_json(data_path, data)
+            _write_inventory(freeze)
+            with self.assertRaisesRegex(ValueError, "HANS content"):
+                verify_freeze_bundle(freeze)
+
+            data_path.write_bytes(original_data)
+            for invalid_id in (
+                "ex0",
+                "hans_train::ex2",
+                "hans_evaluation::hans_evaluation::ex0",
+                "hans_evaluation::ex00",
+                "hans_evaluation::ex-1",
+                "hans_evaluation::ex1::extra",
+            ):
                 with self.subTest(invalid_id=invalid_id):
                     data = json.loads(original_data)
                     entry = data["hans"]["evaluation"]

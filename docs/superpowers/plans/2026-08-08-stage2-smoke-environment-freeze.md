@@ -15,7 +15,7 @@
 - Smoke budgets are fixed at sequence length 64, batch size 8, MNLI 96/96, one epoch per phase, four Phase-2 batches, KL 1/2/1, kNN k=3, analysis counts 16/8 and 8/4 per HANS label group, HANS evaluation 384, and 128 for each other OOD evaluation set.
 - `data_seed=42`, `hans_split_seed=42`, and `training_seed=42` remain separated.
 - Official HANS evaluation may be accessed only after the `final_evaluation_start` audit event.
-- Official HANS `pairID` is source-file-local: qualify train rows once as `hans_train::<pairID>` and evaluation rows once as `hans_evaluation::<pairID>` immediately after raw loading. Build/dev share the train namespace, while an independent exact-content gate excludes `pairID` and rejects duplicate or overlapping semantic rows.
+- Official HANS `pairID` is source-file-local: retain validated raw `exN` solely for within-file split/cap ranking, and immediately create `hans_train::<pairID>` or `hans_evaluation::<pairID>` for artifacts. The prefix never enters the cap hash; build/dev share the train namespace. An independent exact-content gate excludes `pairID`, rejects duplicate/overlapping rows, and is persisted in `canonical_data_manifest_v3` with ordered and joint checksums.
 - A100 repeat success means `abs(run1_hans_non_entailment - repeat_hans_non_entailment) <= 0.005`.
 - Production monitoring is 300-second checks, 3,600-second `STALL_WARNING`, and 43,200-second hard timeout. Only hard timeout auto-terminates.
 - Smoke output must be under `ties_results/stage2_smoke/`; any path containing a component named `canonical_v1` is rejected.
@@ -196,9 +196,10 @@ def assert_stage2_output_path(output_dir: Path, repo_root: Path) -> Path:
 
 Use a source ID from the first non-empty preferred field; otherwise hash canonical JSON of the record. Rank each ID by `sha256(f"{seed}\0{stable_id}")`, sort within each stratum, then round-robin across sorted strata until `limit` is reached. Return rows in selected-ID order. Apply the helper before tokenization in every final evaluation loader; HANS uses `("gold_label", "heuristic", "subcase")`, while other datasets use no strata.
 
-For HANS, the preferred field is already source-qualified before this helper is
-called. The evaluation loader must preserve the selected order in emitted
-prediction rows, and Stage 2 validation compares that ordered sequence exactly
+For HANS only, deterministic selection uses the validated raw source-local
+`pairID`; qualification is not part of the ranking hash. After membership is
+fixed, the evaluation loader emits the corresponding source-qualified IDs in
+the same order, and Stage 2 validation compares that ordered sequence exactly
 with the manifest evaluation `selected_ids`.
 
 - [ ] **Step 6: Run focused and regression tests and confirm GREEN**
@@ -436,7 +437,7 @@ Rename the existing private raw loaders to the public names and make final loade
 
 - [ ] **Step 5: Extend backend manifest initialization**
 
-`RealCanonicalBackend.initialize_manifests()` uses its base config to distinguish smoke-selected caps from full canonical selection. MNLI records the sampled fixed membership; HANS records build/dev/evaluation full IDs plus selected evaluation IDs; every OOD dataset records full and selected identities. The top-level manifest includes `schema_version="canonical_data_manifest_v2"` and `scope="stage2_smoke"` when any cap is set, otherwise `scope="canonical_v1"`.
+`RealCanonicalBackend.initialize_manifests()` uses its base config to distinguish smoke-selected caps from full canonical selection. MNLI records the sampled fixed membership; HANS records build/dev/evaluation full IDs, selected evaluation IDs, and versioned ordered content-integrity evidence; every OOD dataset records full and selected identities. The top-level manifest includes `schema_version="canonical_data_manifest_v3"` and `scope="stage2_smoke"` when any cap is set, otherwise `scope="canonical_v1"`.
 
 - [ ] **Step 6: Run manifest and regression tests**
 

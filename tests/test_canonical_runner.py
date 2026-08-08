@@ -246,9 +246,24 @@ class RealCanonicalBackendContractTest(unittest.TestCase):
                     {key: events[0][key] for key in ("event", "dataset", "split", "purpose")},
                 )
                 return {
-                    "build_pair_ids": ["hans_train::build-1"],
-                    "dev_pair_ids": ["hans_train::dev-1"],
-                    "evaluation_pair_ids": ["hans_evaluation::eval-1"],
+                    "build_pair_ids": ["hans_train::ex0"],
+                    "dev_pair_ids": ["hans_train::ex1"],
+                    "evaluation_pair_ids": ["hans_evaluation::ex0"],
+                    "build_records": [{
+                        "pairID": "ex0", "canonical_pair_id": "hans_train::ex0",
+                        "gold_label": "entailment", "heuristic": "lexical_overlap",
+                        "subcase": "build", "sentence1": "build premise", "sentence2": "build hypothesis",
+                    }],
+                    "dev_records": [{
+                        "pairID": "ex1", "canonical_pair_id": "hans_train::ex1",
+                        "gold_label": "non-entailment", "heuristic": "subsequence",
+                        "subcase": "dev", "sentence1": "dev premise", "sentence2": "dev hypothesis",
+                    }],
+                    "evaluation_records": [{
+                        "pairID": "ex0", "canonical_pair_id": "hans_evaluation::ex0",
+                        "gold_label": "non-entailment", "heuristic": "constituent",
+                        "subcase": "evaluation", "sentence1": "evaluation premise", "sentence2": "evaluation hypothesis",
+                    }],
                 }
 
             dataloader_stub.make_hans_split_manifest = fake_hans_manifest

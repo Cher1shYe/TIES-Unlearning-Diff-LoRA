@@ -136,14 +136,14 @@ def _live_environment_probe() -> dict[str, Any]:
 
 
 def _strict_data_manifest(data: dict[str, Any]) -> None:
-    if set(data) != {"schema_version", "scope", "data_seed", "hans_split_seed", "mnli", "hans", "ood"} or data.get("schema_version") != "canonical_data_manifest_v2" or data.get("scope") != "canonical_v1":
+    if set(data) != {"schema_version", "scope", "data_seed", "hans_split_seed", "mnli", "hans", "ood"} or data.get("schema_version") != "canonical_data_manifest_v3" or data.get("scope") != "canonical_v1":
         raise ValueError("canonical data manifest schema/scope is invalid")
     if data.get("data_seed") != 42 or data.get("hans_split_seed") != 42:
         raise ValueError("canonical data manifest seeds must equal 42")
     groups = (("mnli", "train", "validation_matched"), ("hans", "build", "dev", "evaluation"), ("ood", "esnli", "anli", "snli_hard", "wanli"))
     for group, *entries in groups:
         mapping = data.get(group)
-        expected_names = set(entries)
+        expected_names = set(entries) | ({"content_integrity"} if group == "hans" else set())
         if not isinstance(mapping, dict) or set(mapping) != expected_names:
             raise ValueError(f"canonical data manifest lacks {group}")
         for name in entries:

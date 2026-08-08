@@ -100,13 +100,18 @@ Optional evaluation caps are added to `TrainConfig` with `None` defaults. `None`
 
 Sampling uses stable source IDs where available and a content-derived SHA-256 identity otherwise. HANS sampling is stratified so both gold-label groups and all three heuristic families are represented when the requested cap permits it. The selected IDs and their ordered checksums are written to the smoke data manifest.
 
-Official HANS `pairID` values are local to each physical source file. Immediately
-after raw loading, train IDs are represented as `hans_train::<pairID>` and
-evaluation IDs as `hans_evaluation::<pairID>`; logical build and dev retain the
-same train namespace. A separate exact-content identity over gold label,
-premise, hypothesis, heuristic, and subcase excludes `pairID` and rejects
-within-partition duplicates or cross-partition overlap. Source qualification
-therefore resolves local-ID reuse without weakening the leakage gate.
+Official HANS `pairID` values are local to each physical source file. Raw
+loading retains the grammar-validated `exN` value solely as the within-file
+split/cap ranking key and also creates `hans_train::<pairID>` or
+`hans_evaluation::<pairID>` for global artifacts; logical build and dev retain
+the same train namespace. The prefix never enters the deterministic cap hash,
+so smoke membership remains the frozen raw-key membership. A separate
+exact-content identity over gold label, premise, hypothesis, heuristic, and
+subcase excludes `pairID` and rejects within-partition duplicates or
+cross-partition overlap. `canonical_data_manifest_v3` persists the ordered
+content hashes, ordered and joint ID/content checksums, declarations, and
+recomputed zero duplicate/overlap counts. Source qualification therefore
+resolves local-ID reuse without weakening the leakage gate.
 
 The freeze bundle has a separate canonical-targeted data manifest. It records the complete frozen 100,000-row MNLI training membership, 5,000-row MNLI validation membership, full HANS build/dev/evaluation membership, and full stable or reconstructable identities for e-SNLI, ANLI, SNLI-hard, and WANLI. Smoke-subset checksums never replace these full canonical identities.
 

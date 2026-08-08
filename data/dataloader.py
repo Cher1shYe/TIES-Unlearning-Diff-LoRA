@@ -79,7 +79,10 @@ def _load_hans_dataset(split: str = "eval"):
     physical_source = "train" if split == "train" else "evaluation"
     return hans.map(
         lambda record: {
-            "pairID": qualify_hans_pair_id(record.get("pairID"), physical_source)
+            "pairID": str(record.get("pairID")),
+            "canonical_pair_id": qualify_hans_pair_id(
+                record.get("pairID"), physical_source
+            ),
         }
     )
 
@@ -141,7 +144,7 @@ def _prepare_hans_base_dataset(cfg: TrainConfig, tok, split: str = "evaluation")
     def _tok_hans(batch):
         out = _tokenize_pair(tok, batch, cfg.max_seq_length)
         out["label"] = batch["label"]
-        out["pair_id"] = [str(value) for value in batch["pairID"]]
+        out["pair_id"] = [str(value) for value in batch["canonical_pair_id"]]
         out["gold_label_text"] = list(batch["gold_label"])
         out["heuristic_name"] = list(batch["heuristic"])
         out["heuristic"] = [heuristic_map.get(h, -1) for h in batch["heuristic"]]
@@ -245,7 +248,7 @@ def make_hans_split_manifest(cfg: TrainConfig):
     _, _, split = _hans_train_partitions(cfg)
     evaluation = _load_hans_dataset("eval")
     evaluation_records = [dict(evaluation[index]) for index in range(len(evaluation))]
-    evaluation_ids = [str(record["pairID"]) for record in evaluation_records]
+    evaluation_ids = [str(record["canonical_pair_id"]) for record in evaluation_records]
     validate_hans_disjointness(split.build_pair_ids, split.dev_pair_ids, evaluation_ids)
     validate_hans_content_integrity(
         split.build_records,
@@ -255,6 +258,8 @@ def make_hans_split_manifest(cfg: TrainConfig):
     manifest = split.manifest()
     manifest["evaluation_count"] = len(evaluation_ids)
     manifest["evaluation_pair_ids"] = evaluation_ids
+    manifest["build_records"] = [dict(record) for record in split.build_records]
+    manifest["dev_records"] = [dict(record) for record in split.dev_records]
     # The backend consumes these raw, un-tokenized records only to reproduce
     # the stratified evaluation identity selection; it never persists them.
     manifest["evaluation_records"] = evaluation_records

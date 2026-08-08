@@ -1,3 +1,5 @@
+from hashlib import sha256
+import json
 import random
 import sys
 import unittest
@@ -9,6 +11,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from canonical.data import (
+    build_hans_content_integrity_manifest,
     dataset_row_ids,
     qualify_hans_pair_id,
     sample_dataset,
@@ -68,6 +71,85 @@ class CanonicalDataContractTest(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "physical source partition"):
             qualify_hans_pair_id("hans_evaluation::ex0", "train")
+
+    def test_hans_pair_id_rejects_noncanonical_official_suffix_grammar(self):
+        invalid_raw = (
+            "",
+            "row-1",
+            "ex",
+            "ex00",
+            "ex01",
+            "ex+1",
+            "ex-1",
+            "ex1.0",
+            "ex1::extra",
+        )
+        for value in invalid_raw:
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ValueError, "canonical source-local"):
+                    qualify_hans_pair_id(value, "train")
+        for value in (
+            "hans_train::hans_train::ex1",
+            "hans_evaluation::hans_train::ex1",
+            "hans_train::ex01",
+        ):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    qualify_hans_pair_id(value, "train")
+
+    def test_hans_content_integrity_manifest_binds_ordered_ids_without_pair_id_content(self):
+        build = hans_record("ex0", "entailment", "lexical_overlap", "build-case")
+        build["canonical_pair_id"] = "hans_train::ex0"
+        dev = hans_record("ex1", "non-entailment", "subsequence", "dev-case")
+        dev["canonical_pair_id"] = "hans_train::ex1"
+        evaluation = hans_record(
+            "ex0", "non-entailment", "constituent", "evaluation-case"
+        )
+        evaluation["canonical_pair_id"] = "hans_evaluation::ex0"
+        records = {"build": [build], "dev": [dev], "evaluation": [evaluation]}
+        ids = {
+            "build": ["hans_train::ex0"],
+            "dev": ["hans_train::ex1"],
+            "evaluation": ["hans_evaluation::ex0"],
+        }
+
+        evidence = build_hans_content_integrity_manifest(records, ids)
+
+        self.assertEqual("hans_content_integrity_v1", evidence["schema_version"])
+        self.assertEqual(
+            ["gold_label", "premise", "hypothesis", "heuristic", "subcase"],
+            evidence["fields"],
+        )
+        self.assertTrue(evidence["excludes_pair_id"])
+        self.assertEqual(
+            {"build_dev": 0, "build_evaluation": 0, "dev_evaluation": 0},
+            evidence["overlap_counts"],
+        )
+        build_entry = evidence["partitions"]["build"]
+        self.assertEqual(1, build_entry["count"])
+        self.assertEqual(0, build_entry["duplicate_content_count"])
+        self.assertEqual(1, len(build_entry["content_sha256"]))
+        expected_joint = sha256(
+            json.dumps(
+                [["hans_train::ex0", build_entry["content_sha256"][0]]],
+                ensure_ascii=False,
+                allow_nan=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        self.assertEqual(expected_joint, build_entry["source_id_content_joint_checksum"])
+
+        changed_pair_ids = {
+            name: [dict(row, pairID="ex999", canonical_pair_id="hans_train::ex999") for row in rows]
+            for name, rows in records.items()
+        }
+        changed_pair_ids["evaluation"][0]["canonical_pair_id"] = "hans_evaluation::ex999"
+        changed_evidence = build_hans_content_integrity_manifest(changed_pair_ids, ids)
+        self.assertEqual(
+            evidence["partitions"]["build"]["content_sha256"],
+            changed_evidence["partitions"]["build"]["content_sha256"],
+        )
 
     def test_training_seed_cannot_change_fixed_data_ids(self):
         source = FakeDataset({"idx": index} for index in range(20))

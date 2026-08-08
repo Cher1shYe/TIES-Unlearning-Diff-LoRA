@@ -361,6 +361,8 @@ def _root_common(root: Path) -> tuple[dict[str, str], dict[str, Any], list[str]]
     if not data.is_file() or not environment.is_file():
         raise ValueError("smoke root lacks data or environment manifest")
     data_manifest = _read_json(data)
+    if data_manifest.get("schema_version") != "canonical_data_manifest_v3":
+        raise ValueError("data manifest schema must be canonical_data_manifest_v3")
     expected_hans_ids = validate_hans_manifest_identities(data_manifest.get("hans"))
     data_seed = _require_seed(data_manifest.get("data_seed"), name="data_manifest.data_seed")
     hans_split_seed = _require_seed(
