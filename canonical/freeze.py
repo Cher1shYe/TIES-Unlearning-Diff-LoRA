@@ -144,7 +144,10 @@ def _strict_data_manifest(data: dict[str, Any]) -> None:
     for group, *entries in groups:
         mapping = data.get(group)
         expected_names = set(entries) | ({"split_integrity", "content_integrity", "selection_integrity"} if group == "hans" else set())
-        if not isinstance(mapping, dict) or set(mapping) != expected_names:
+        # hans.source_integrity is informational-but-verified: tolerated here
+        # and hard-checked in validate_hans_manifest_identities when present.
+        optional_names = {"source_integrity"} if group == "hans" else set()
+        if not isinstance(mapping, dict) or set(mapping) - optional_names != expected_names:
             raise ValueError(f"canonical data manifest lacks {group}")
         for name in entries:
             entry = mapping.get(name)

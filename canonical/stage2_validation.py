@@ -457,7 +457,11 @@ def _validate_stage2_data_manifest(data_manifest: Any) -> list[str]:
     }
     for group, names in expected_groups.items():
         mapping = data_manifest.get(group)
-        if not isinstance(mapping, Mapping) or set(mapping) != names:
+        # hans.source_integrity is informational-but-verified (Addendum v1.1
+        # section 1.3): tolerated here, and hard-checked against the official
+        # v2 anchors inside validate_hans_manifest_identities when present.
+        optional = {"source_integrity"} if group == "hans" else set()
+        if not isinstance(mapping, Mapping) or set(mapping) - optional != names:
             raise ValueError(f"Stage 2 data profile lacks exact {group} entries")
     for group, name in _STAGE2_DATA_PROFILE:
         _validate_stage2_identity_entry(data_manifest[group][name], group=group, name=name)

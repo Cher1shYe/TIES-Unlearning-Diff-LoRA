@@ -575,6 +575,54 @@ class Stage2ValidationTest(unittest.TestCase):
                 official_anchors=tampered_anchors,
             )
 
+    def test_smoke_root_with_source_integrity_manifest_is_accepted(self):
+        # The real backend always writes hans.source_integrity now; a full
+        # root carrying it must validate when it matches the pinned anchors.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = _create_smoke_root(Path(tmp) / "with-source-integrity")
+            path = root / "manifests" / "data_manifest.json"
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+            fabricated = {
+                "schema_version": "hans_source_integrity_v1",
+                "algorithm": "sha256_canonical_json_utf8_v1",
+                "fields": [
+                    "gold_label", "sentence1_binary_parse", "sentence2_binary_parse",
+                    "sentence1_parse", "sentence2_parse", "sentence1", "sentence2",
+                    "pairID", "heuristic", "subcase", "template",
+                ],
+                "ordering": "numeric_pair_id_then_raw_pair_id_v1",
+                "sources": {
+                    "train": {"count": 2, "records_sha256": "a" * 64},
+                    "evaluation": {"count": 4, "records_sha256": "b" * 64},
+                },
+            }
+            manifest["hans"]["source_integrity"] = fabricated
+            write_json(path, manifest)
+            _rebind_data_manifest_hash(root)
+
+            anchors = deepcopy(TEST_HANS_ANCHORS)
+            anchors["source_integrity"] = fabricated["sources"]
+            with patch("canonical.stage2_validation._STAGE2_DATA_PROFILE", TEST_STAGE2_PROFILE), patch(
+                "canonical.stage2_validation.HANS_OFFICIAL_ANCHORS_V2", anchors
+            ):
+                report = _production_validate_smoke_root(
+                    root,
+                    expected_conditions=PRIMARY_CONDITIONS,
+                    canonical_dir=Path(tmp) / "canonical_v1",
+                )
+            self.assertEqual("pass", report["state"])
+
+            # Anchors without matching source evidence must still fail closed.
+            with patch("canonical.stage2_validation._STAGE2_DATA_PROFILE", TEST_STAGE2_PROFILE), patch(
+                "canonical.stage2_validation.HANS_OFFICIAL_ANCHORS_V2", TEST_HANS_ANCHORS
+            ):
+                with self.assertRaisesRegex(ValueError, "source integrity"):
+                    _production_validate_smoke_root(
+                        root,
+                        expected_conditions=PRIMARY_CONDITIONS,
+                        canonical_dir=Path(tmp) / "canonical_v1",
+                    )
+
     def test_two_id_root_labelled_stage2_smoke_profile_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = _create_smoke_root(Path(tmp) / "two-id-profile")
