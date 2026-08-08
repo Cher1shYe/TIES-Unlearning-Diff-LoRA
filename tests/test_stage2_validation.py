@@ -1,3 +1,4 @@
+from copy import deepcopy
 import json
 from hashlib import sha256
 import subprocess
@@ -5,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -12,12 +14,14 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from canonical.artifacts import sha256_file, write_json, write_jsonl
+from canonical.data import build_hans_selection_integrity, hans_manifest_identity_summary
 from canonical.hans import aggregate_hans_predictions
 from canonical.runner import _METHOD_OUTPUTS, _SHARED_OUTPUTS
 from canonical.stage2_validation import (
-    compare_a100_repeat,
+    _validate_manifest_identity_audit,
+    compare_a100_repeat as _production_compare_a100_repeat,
     compare_metric_values,
-    validate_smoke_root,
+    validate_smoke_root as _production_validate_smoke_root,
 )
 
 
@@ -53,9 +57,19 @@ def _predictions(method, checkpoint_hash):
     ]
 
 
-def _hans_identity_entry(ids):
-    values = list(ids)
-    digest = sha256(
+def _identity_entry(
+    full_ids,
+    *,
+    selected_ids=None,
+    source,
+    split,
+    preferred_id_fields,
+    strata_fields=(),
+    selected_limit=None,
+):
+    values = list(full_ids)
+    selected = list(values if selected_ids is None else selected_ids)
+    full_digest = sha256(
         json.dumps(
             values,
             ensure_ascii=False,
@@ -64,13 +78,29 @@ def _hans_identity_entry(ids):
             separators=(",", ":"),
         ).encode("utf-8")
     ).hexdigest()
+    selected_digest = sha256(
+        json.dumps(
+            selected,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
     return {
+        "source": source,
+        "split": split,
+        "id_strategy": "preferred_field_or_content_sha256",
+        "preferred_id_fields": list(preferred_id_fields),
+        "strata_fields": list(strata_fields),
+        "selection_seed": 42,
+        "selected_limit": selected_limit,
         "full_count": len(values),
-        "selected_count": len(values),
+        "selected_count": len(selected),
         "full_ids": values,
-        "selected_ids": values,
-        "full_ids_sha256": digest,
-        "selected_ids_sha256": digest,
+        "selected_ids": selected,
+        "full_ids_sha256": full_digest,
+        "selected_ids_sha256": selected_digest,
     }
 
 
@@ -122,6 +152,128 @@ def _hans_content_integrity(hans_entries):
     }
 
 
+def _fixture_hans_manifest():
+    hans = {
+        "build": _identity_entry(
+            ["hans_train::ex0"], source="tommccoy1/hans", split="build",
+            preferred_id_fields=("pairID",),
+        ),
+        "dev": _identity_entry(
+            ["hans_train::ex1"], source="tommccoy1/hans", split="dev",
+            preferred_id_fields=("pairID",),
+        ),
+        "evaluation": _identity_entry(
+            ["hans_evaluation::ex0", "hans_evaluation::ex1"],
+            source="tommccoy1/hans", split="evaluation",
+            preferred_id_fields=("pairID",),
+            strata_fields=("gold_label", "heuristic", "subcase"),
+            selected_limit=2,
+        ),
+    }
+    split_payload = {
+        "schema_version": "hans_split_v1",
+        "hans_split_seed": 42,
+        "build_pair_ids": ["ex0"],
+        "dev_pair_ids": ["ex1"],
+        "small_strata": [],
+    }
+    hans["split_integrity"] = {
+        "schema_version": "hans_split_integrity_v1",
+        "seed": 42,
+        "split_algorithm": "source_local_id_sort_numpy_default_rng_per_stratum_v1",
+        "checksum_algorithm": "sha256_canonical_json_utf8_v1",
+        "build_count": 1,
+        "dev_count": 1,
+        "build_source_pair_ids": ["ex0"],
+        "dev_source_pair_ids": ["ex1"],
+        "small_strata": [],
+        "split_checksum": sha256(
+            json.dumps(
+                split_payload,
+                ensure_ascii=False,
+                allow_nan=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest(),
+    }
+    hans["content_integrity"] = _hans_content_integrity(hans)
+    selected_records = [
+        {"pairID": "ex0", "canonical_pair_id": "hans_evaluation::ex0"},
+        {"pairID": "ex1", "canonical_pair_id": "hans_evaluation::ex1"},
+    ]
+    hans["selection_integrity"] = build_hans_selection_integrity(
+        selected_records,
+        hans["evaluation"]["selected_ids"],
+        limit=2,
+        seed=42,
+    )
+    return hans
+
+
+TEST_HANS_MANIFEST = _fixture_hans_manifest()
+TEST_HANS_ANCHORS = {
+    "schema_version": "hans_official_semantic_anchors_v1",
+    "split_checksum": TEST_HANS_MANIFEST["split_integrity"]["split_checksum"],
+    "partitions": {
+        name: {
+            "count": TEST_HANS_MANIFEST[name]["full_count"],
+            "source_pair_ids_sha256": sha256(
+                json.dumps(
+                    TEST_HANS_MANIFEST["split_integrity"].get(
+                        f"{name}_source_pair_ids", []
+                    ),
+                    ensure_ascii=False,
+                    allow_nan=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest(),
+            "qualified_ids_sha256": TEST_HANS_MANIFEST[name]["full_ids_sha256"],
+            "content_sha256_ordered_checksum": TEST_HANS_MANIFEST["content_integrity"]["partitions"][name]["content_sha256_ordered_checksum"],
+            "source_id_content_joint_checksum": TEST_HANS_MANIFEST["content_integrity"]["partitions"][name]["source_id_content_joint_checksum"],
+        }
+        for name in ("build", "dev", "evaluation")
+    },
+    "selection_2": {
+        "count": 2,
+        "selected_source_pair_ids_sha256": TEST_HANS_MANIFEST["selection_integrity"]["selected_source_pair_ids_sha256"],
+        "selected_artifact_ids_sha256": TEST_HANS_MANIFEST["selection_integrity"]["selected_artifact_ids_sha256"],
+        "source_to_artifact_mapping_sha256": TEST_HANS_MANIFEST["selection_integrity"]["source_to_artifact_mapping_sha256"],
+    },
+}
+TEST_STAGE2_PROFILE = {
+    ("mnli", "train"): ("nyu-mll/glue:mnli", "train", ["idx", "row_id", "id", "uid"], [], 4, 2, 2),
+    ("mnli", "validation_matched"): ("nyu-mll/glue:mnli", "validation_matched", ["idx", "row_id", "id", "uid"], [], 4, 2, 2),
+    ("hans", "build"): ("tommccoy1/hans", "build", ["pairID"], [], 1, 1, None),
+    ("hans", "dev"): ("tommccoy1/hans", "dev", ["pairID"], [], 1, 1, None),
+    ("hans", "evaluation"): ("tommccoy1/hans", "evaluation", ["pairID"], ["gold_label", "heuristic", "subcase"], 2, 2, 2),
+    ("ood", "esnli"): ("e-SNLI", "test", ["pairID", "uid", "id", "idx"], [], 2, 1, 1),
+    ("ood", "anli"): ("facebook/anli", "test", ["pairID", "uid", "id", "idx"], [], 2, 1, 1),
+    ("ood", "snli_hard"): ("snli_1.0_test_hard", "test", ["pairID", "uid", "id", "idx"], [], 2, 1, 1),
+    ("ood", "wanli"): ("alisawuffles/WANLI", "test", ["pairID", "uid", "id", "idx"], [], 2, 1, 1),
+}
+
+
+def _controlled_contract():
+    return (
+        patch("canonical.stage2_validation._STAGE2_DATA_PROFILE", TEST_STAGE2_PROFILE),
+        patch("canonical.stage2_validation.HANS_OFFICIAL_ANCHORS_V1", TEST_HANS_ANCHORS),
+    )
+
+
+def validate_smoke_root(*args, **kwargs):
+    profile, anchors = _controlled_contract()
+    with profile, anchors:
+        return _production_validate_smoke_root(*args, **kwargs)
+
+
+def compare_a100_repeat(*args, **kwargs):
+    profile, anchors = _controlled_contract()
+    with profile, anchors:
+        return _production_compare_a100_repeat(*args, **kwargs)
+
+
 def _write_success_status(directory, relative_outputs):
     write_json(
         directory / "status.json",
@@ -145,6 +297,32 @@ def _write_success_status(directory, relative_outputs):
 def _rehash_status(directory):
     status = json.loads((directory / "status.json").read_text(encoding="utf-8"))
     _write_success_status(directory, list(status["output_hashes"]))
+
+
+def _rebind_data_manifest_hash(root):
+    data_hash = sha256_file(Path(root) / "manifests" / "data_manifest.json")
+    for manifest_path in (Path(root) / "seed_42").glob("*/run_manifest.json"):
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["data_manifest_sha256"] = data_hash
+        write_json(manifest_path, manifest)
+        _rehash_status(manifest_path.parent)
+
+
+def _rebind_manifest_identity_summary(root):
+    root = Path(root)
+    manifest = json.loads(
+        (root / "manifests" / "data_manifest.json").read_text(encoding="utf-8")
+    )
+    audit = root / "manifests" / "data_access.jsonl"
+    events = [json.loads(line) for line in audit.read_text(encoding="utf-8").splitlines()]
+    events[1] = {
+        **{
+            key: events[1][key]
+            for key in ("sequence", "timestamp", "event", "dataset", "split", "purpose")
+        },
+        **hans_manifest_identity_summary(manifest["hans"]),
+    }
+    write_jsonl(audit, events)
 
 
 def _set_status_hashes(directory, relative_paths):
@@ -187,21 +365,43 @@ def _create_smoke_root(
     root = Path(base) / "smoke"
     manifests = root / "manifests"
     manifests.mkdir(parents=True)
-    hans_entries = {
-        "build": _hans_identity_entry(["hans_train::ex0"]),
-        "dev": _hans_identity_entry(["hans_train::ex1"]),
-        "evaluation": _hans_identity_entry(
-            ["hans_evaluation::ex0", "hans_evaluation::ex1"]
+    hans_entries = deepcopy(TEST_HANS_MANIFEST)
+    mnli = {
+        "train": _identity_entry(
+            [f"train-{index}" for index in range(4)],
+            selected_ids=["train-0", "train-1"],
+            source="nyu-mll/glue:mnli", split="train",
+            preferred_id_fields=("idx", "row_id", "id", "uid"), selected_limit=2,
+        ),
+        "validation_matched": _identity_entry(
+            [f"validation-{index}" for index in range(4)],
+            selected_ids=["validation-0", "validation-1"],
+            source="nyu-mll/glue:mnli", split="validation_matched",
+            preferred_id_fields=("idx", "row_id", "id", "uid"), selected_limit=2,
         ),
     }
-    hans_entries["content_integrity"] = _hans_content_integrity(hans_entries)
+    ood = {
+        name: _identity_entry(
+            [f"{name}-{index}" for index in range(2)],
+            selected_ids=[f"{name}-0"],
+            source=source, split="test",
+            preferred_id_fields=("pairID", "uid", "id", "idx"), selected_limit=1,
+        )
+        for name, source in {
+            "esnli": "e-SNLI", "anli": "facebook/anli",
+            "snli_hard": "snli_1.0_test_hard", "wanli": "alisawuffles/WANLI",
+        }.items()
+    }
     write_json(
         manifests / "data_manifest.json",
         {
-            "schema_version": "canonical_data_manifest_v3",
+            "schema_version": "canonical_data_manifest_v4",
+            "scope": "stage2_smoke",
             "data_seed": 42,
             "hans_split_seed": 42,
+            "mnli": mnli,
             "hans": hans_entries,
+            "ood": ood,
         },
     )
     write_json(
@@ -241,7 +441,15 @@ def _create_smoke_root(
         manifests / "data_access.jsonl",
         [
             {"sequence": 0, "timestamp": "2026-08-08T00:00:00+00:00", "event": "dataset_access", "dataset": "hans", "split": "evaluation", "purpose": "manifest_identity_only"},
-            {"sequence": 1, "timestamp": "2026-08-08T00:00:01+00:00", "event": "manifest_identity_summary", "dataset": "hans", "split": "evaluation", "purpose": "manifest_identity_only", "identity_counts": {"build": 1, "dev": 1, "evaluation": 2}, "identity_checksums": {"build": HASH_A, "dev": HASH_A, "evaluation": HASH_A}},
+            {
+                "sequence": 1,
+                "timestamp": "2026-08-08T00:00:01+00:00",
+                "event": "manifest_identity_summary",
+                "dataset": "hans",
+                "split": "evaluation",
+                "purpose": "manifest_identity_only",
+                **hans_manifest_identity_summary(hans_entries),
+            },
         ],
     )
 
@@ -330,6 +538,213 @@ def _create_smoke_root(
 
 
 class Stage2ValidationTest(unittest.TestCase):
+    def test_two_id_root_labelled_stage2_smoke_profile_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = _create_smoke_root(Path(tmp) / "two-id-profile")
+
+            with self.assertRaisesRegex(ValueError, "schema|scope|profile|count"):
+                _production_validate_smoke_root(
+                    root,
+                    expected_conditions=PRIMARY_CONDITIONS,
+                    canonical_dir=Path(tmp) / "canonical_v1",
+                )
+
+    def test_manifest_identity_summary_must_equal_the_data_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = _create_smoke_root(Path(tmp) / "stale-summary")
+            audit = root / "manifests" / "data_access.jsonl"
+            events = [
+                json.loads(line)
+                for line in audit.read_text(encoding="utf-8").splitlines()
+            ]
+            events[1]["identity_counts"] = {
+                "build": 999,
+                "dev": 999,
+                "evaluation": 999,
+            }
+            events[1]["identity_checksums"] = {
+                "build": "9" * 64,
+                "dev": "9" * 64,
+                "evaluation": "9" * 64,
+            }
+            expected_summary = {
+                "identity_counts": {"build": 1, "dev": 1, "evaluation": 2},
+                "identity_checksums": {
+                    "build": HASH_A,
+                    "dev": HASH_A,
+                    "evaluation": HASH_A,
+                },
+                "split_integrity_summary": {"split_checksum": HASH_A},
+                "content_integrity_summary": {"evaluation": HASH_A},
+                "selection_integrity_summary": {"selection": HASH_A},
+            }
+            events[1]["split_integrity_summary"] = expected_summary["split_integrity_summary"]
+            events[1]["content_integrity_summary"] = expected_summary["content_integrity_summary"]
+            events[1]["selection_integrity_summary"] = expected_summary["selection_integrity_summary"]
+
+            with self.assertRaisesRegex(ValueError, "manifest identity.*summary"):
+                _validate_manifest_identity_audit(
+                    events,
+                    source=audit,
+                    expected_summary=expected_summary,
+                )
+
+    def test_rehashed_content_reorder_cannot_replace_official_semantic_anchor(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = _create_smoke_root(Path(tmp) / "rehashed-content")
+            path = root / "manifests" / "data_manifest.json"
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+            entry = manifest["hans"]["content_integrity"]["partitions"]["evaluation"]
+            entry["content_sha256"] = list(reversed(entry["content_sha256"]))
+            entry["content_sha256_ordered_checksum"] = sha256(
+                json.dumps(
+                    entry["content_sha256"],
+                    ensure_ascii=False,
+                    allow_nan=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+            pairs = list(
+                zip(
+                    manifest["hans"]["evaluation"]["full_ids"],
+                    entry["content_sha256"],
+                )
+            )
+            entry["source_id_content_joint_checksum"] = sha256(
+                json.dumps(
+                    pairs,
+                    ensure_ascii=False,
+                    allow_nan=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+            write_json(path, manifest)
+            _rebind_data_manifest_hash(root)
+
+            with self.assertRaisesRegex(ValueError, "official.*content|semantic anchor"):
+                validate_smoke_root(
+                    root,
+                    expected_conditions=PRIMARY_CONDITIONS,
+                    canonical_dir=Path(tmp) / "canonical_v1",
+                )
+
+    def test_rehashed_split_swap_cannot_replace_official_semantic_anchor(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = _create_smoke_root(Path(tmp) / "rehashed-split")
+            path = root / "manifests" / "data_manifest.json"
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+            hans = manifest["hans"]
+            for key in (
+                "full_ids", "selected_ids", "full_ids_sha256", "selected_ids_sha256"
+            ):
+                hans["build"][key], hans["dev"][key] = hans["dev"][key], hans["build"][key]
+            hans["content_integrity"]["partitions"]["build"], hans["content_integrity"]["partitions"]["dev"] = (
+                hans["content_integrity"]["partitions"]["dev"],
+                hans["content_integrity"]["partitions"]["build"],
+            )
+            split = hans["split_integrity"]
+            split["build_source_pair_ids"], split["dev_source_pair_ids"] = (
+                split["dev_source_pair_ids"], split["build_source_pair_ids"]
+            )
+            checksum_payload = {
+                "schema_version": "hans_split_v1",
+                "hans_split_seed": split["seed"],
+                "build_pair_ids": split["build_source_pair_ids"],
+                "dev_pair_ids": split["dev_source_pair_ids"],
+                "small_strata": [],
+            }
+            split["split_checksum"] = sha256(
+                json.dumps(
+                    checksum_payload,
+                    ensure_ascii=False,
+                    allow_nan=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+            write_json(path, manifest)
+            _rebind_manifest_identity_summary(root)
+            _rebind_data_manifest_hash(root)
+
+            with self.assertRaisesRegex(ValueError, "official.*split.*anchor"):
+                validate_smoke_root(
+                    root,
+                    expected_conditions=PRIMARY_CONDITIONS,
+                    canonical_dir=Path(tmp) / "canonical_v1",
+                )
+
+    def test_rehashed_selection_mapping_cannot_replace_official_anchor(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = _create_smoke_root(Path(tmp) / "rehashed-selection")
+            path = root / "manifests" / "data_manifest.json"
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+            hans = manifest["hans"]
+            evaluation = hans["evaluation"]
+            evaluation["selected_ids"] = list(reversed(evaluation["selected_ids"]))
+            evaluation["selected_ids_sha256"] = sha256(
+                json.dumps(
+                    evaluation["selected_ids"],
+                    ensure_ascii=False,
+                    allow_nan=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+            selection = hans["selection_integrity"]
+            selection["selected_source_pair_ids"] = list(
+                reversed(selection["selected_source_pair_ids"])
+            )
+            mapping = list(
+                zip(selection["selected_source_pair_ids"], evaluation["selected_ids"])
+            )
+            selection["selected_source_pair_ids_sha256"] = sha256(
+                json.dumps(
+                    selection["selected_source_pair_ids"],
+                    ensure_ascii=False,
+                    allow_nan=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+            selection["selected_artifact_ids_sha256"] = evaluation[
+                "selected_ids_sha256"
+            ]
+            selection["source_to_artifact_mapping_sha256"] = sha256(
+                json.dumps(
+                    mapping,
+                    ensure_ascii=False,
+                    allow_nan=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+            selection_payload = {
+                key: value
+                for key, value in selection.items()
+                if key != "integrity_checksum"
+            }
+            selection["integrity_checksum"] = sha256(
+                json.dumps(
+                    [[key, selection_payload[key]] for key in sorted(selection_payload)],
+                    ensure_ascii=False,
+                    allow_nan=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+            write_json(path, manifest)
+            _rebind_manifest_identity_summary(root)
+            _rebind_data_manifest_hash(root)
+
+            with self.assertRaisesRegex(ValueError, "official.*selection.*anchor"):
+                validate_smoke_root(
+                    root,
+                    expected_conditions=PRIMARY_CONDITIONS,
+                    canonical_dir=Path(tmp) / "canonical_v1",
+                )
+
     def test_weight_optional_validator_reuses_full_semantics_for_exact_shared_checkpoint_omission(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = _create_smoke_root(Path(tmp) / "optional")
@@ -460,7 +875,6 @@ class Stage2ValidationTest(unittest.TestCase):
                     manifest = json.loads(path.read_text(encoding="utf-8"))
                     entry = manifest["hans"]["evaluation"]
                     transform(entry)
-                    del manifest["hans"]["content_integrity"]
                     if transform is not invalid_checksum:
                         digest = sha256(
                             json.dumps(
@@ -474,14 +888,14 @@ class Stage2ValidationTest(unittest.TestCase):
                         entry["full_ids_sha256"] = entry["selected_ids_sha256"] = digest
                     write_json(path, manifest)
 
-                    with self.assertRaisesRegex(ValueError, "HANS manifest"):
+                    with self.assertRaisesRegex(ValueError, "HANS manifest|Stage 2 data profile"):
                         validate_smoke_root(
                             root,
                             expected_conditions=PRIMARY_CONDITIONS,
                             canonical_dir=Path(tmp) / "canonical_v1",
                         )
 
-    def test_validator_requires_v3_content_integrity_and_rejects_bound_tamper(self):
+    def test_validator_requires_v4_content_integrity_and_rejects_bound_tamper(self):
         def missing(manifest):
             del manifest["hans"]["content_integrity"]
 
@@ -579,7 +993,10 @@ class Stage2ValidationTest(unittest.TestCase):
                     transform(manifest)
                     write_json(path, manifest)
 
-                    with self.assertRaisesRegex(ValueError, "data manifest|HANS content"):
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        "data manifest|HANS.*content|data profile|semantic anchor",
+                    ):
                         validate_smoke_root(
                             root,
                             expected_conditions=PRIMARY_CONDITIONS,
@@ -823,13 +1240,14 @@ class Stage2ValidationTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             root = _create_smoke_root(tmp)
-            result = subprocess.run(
-                [sys.executable, "validate_stage2_smoke.py", "--root", str(root), "--conditions", *PRIMARY_CONDITIONS],
-                cwd=ROOT,
-                text=True,
-                capture_output=True,
-            )
-            self.assertEqual(0, result.returncode, result.stderr)
+            import validate_stage2_smoke
+
+            profile, anchors = _controlled_contract()
+            with profile, anchors:
+                result = validate_stage2_smoke.main(
+                    ["--root", str(root), "--conditions", *PRIMARY_CONDITIONS]
+                )
+            self.assertEqual(0, result)
             self.assertTrue((root / "stage2_validation.json").is_file())
             self.assertTrue((root / "stage2_validation.md").is_file())
 
@@ -837,13 +1255,17 @@ class Stage2ValidationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             primary = _create_smoke_root(Path(tmp) / "primary")
             repeat = _repeat_root(Path(tmp) / "repeat")
-            result = subprocess.run(
-                [sys.executable, "validate_stage2_smoke.py", "--root", str(primary), "--conditions", *PRIMARY_CONDITIONS, "--compare-repeat", str(repeat)],
-                cwd=ROOT,
-                text=True,
-                capture_output=True,
-            )
-            self.assertEqual(0, result.returncode, result.stderr)
+            import validate_stage2_smoke
+
+            profile, anchors = _controlled_contract()
+            with profile, anchors:
+                result = validate_stage2_smoke.main(
+                    [
+                        "--root", str(primary), "--conditions", *PRIMARY_CONDITIONS,
+                        "--compare-repeat", str(repeat),
+                    ]
+                )
+            self.assertEqual(0, result)
             report = json.loads((primary / "stage2_validation.json").read_text(encoding="utf-8"))
             self.assertEqual("pass", report["repeat_comparison"]["state"])
             self.assertIn("A100 Repeat", (primary / "stage2_validation.md").read_text(encoding="utf-8"))
@@ -861,13 +1283,17 @@ class Stage2ValidationTest(unittest.TestCase):
             metrics["final"]["hans"] = aggregate_hans_predictions(rows)
             write_json(run / "metrics.json", metrics)
             _rehash_status(run)
-            result = subprocess.run(
-                [sys.executable, "validate_stage2_smoke.py", "--root", str(primary), "--conditions", *PRIMARY_CONDITIONS, "--compare-repeat", str(repeat)],
-                cwd=ROOT,
-                text=True,
-                capture_output=True,
-            )
-            self.assertEqual(1, result.returncode, result.stderr)
+            import validate_stage2_smoke
+
+            profile, anchors = _controlled_contract()
+            with profile, anchors:
+                result = validate_stage2_smoke.main(
+                    [
+                        "--root", str(primary), "--conditions", *PRIMARY_CONDITIONS,
+                        "--compare-repeat", str(repeat),
+                    ]
+                )
+            self.assertEqual(1, result)
             report = json.loads((primary / "stage2_validation.json").read_text(encoding="utf-8"))
             self.assertEqual("fail", report["state"])
             self.assertEqual("fail", report["repeat_comparison"]["state"])

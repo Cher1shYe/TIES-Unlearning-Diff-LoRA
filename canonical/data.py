@@ -17,6 +17,54 @@ _HANS_SOURCE_PREFIXES = {
 _HANS_LOCAL_ID_RE = re.compile(r"^ex(?:0|[1-9][0-9]*)$")
 _HANS_CONTENT_FIELDS = ("gold_label", "premise", "hypothesis", "heuristic", "subcase")
 _HANS_CONTENT_ALGORITHM = "sha256_canonical_json_utf8_v1"
+_HANS_SPLIT_ALGORITHM = "source_local_id_sort_numpy_default_rng_per_stratum_v1"
+_HANS_SELECTION_ALGORITHM = "sha256_seed_nul_source_local_id_stratified_round_robin_v1"
+_HANS_ARTIFACT_TRANSFORM = "hans_evaluation::<source_local_pair_id>"
+
+HANS_OFFICIAL_ANCHORS_V1 = {
+    "schema_version": "hans_official_semantic_anchors_v1",
+    "derivation_algorithm": "official_tsv_canonical_json_utf8_sha256_v1",
+    "source_file_sha256": {
+        "train": "49245bd5fdb0b185dcbfbf48f0f16513c62ad5bc9fad0b8800dc48d6818ee5cf",
+        "evaluation": "c55b62feef9913070e88f38938dc2492018c945ac81f70139346472494124e79",
+    },
+    "split_checksum": "f2d240a1709481a8c37c0721104697469383e9ad49ed22496f9265633c9f129a",
+    "partitions": {
+        "build": {
+            "count": 24000,
+            "source_pair_ids_sha256": "cf37089c0550410096e718e8c5a8f996650afe0afcef91c2660f27ce43560eab",
+            "qualified_ids_sha256": "cd8e7f745cc93703a71bd9c62b36647a8c3fe04596528f1b5a4be002ebe74bcc",
+            "content_sha256_ordered_checksum": "3eea3fea671f926bcc3975dd01595d70842e37ae3ede45b8324d37b2a6dd6de1",
+            "source_id_content_joint_checksum": "c74c88f8edcfd138b99b21571e45fc0520c460eba194edc75dfd7da20f5bde5c",
+        },
+        "dev": {
+            "count": 6000,
+            "source_pair_ids_sha256": "53f63723dfe459bfbd1b1ffe045af5d61beb3181ba37a379dfa96f92e08c1ba8",
+            "qualified_ids_sha256": "f2d2fd8a0c43d8d1c449ab4ed990eedf7d3600afbdd38c0ac8ec0ccde07887ce",
+            "content_sha256_ordered_checksum": "d949b61e6d75889de00d1266ee73633bde9181e23be110005cb106c4328aa8d7",
+            "source_id_content_joint_checksum": "48f62af7a35125b87195fa0c6590918bf472de9b5b1315e303d9e10fd2ac214b",
+        },
+        "evaluation": {
+            "count": 30000,
+            "source_pair_ids_sha256": "495a55ae9bad6e464684b3b205ae6b591f5abb424dd5c0fdb98f2ad3db63be70",
+            "qualified_ids_sha256": "0a6d3beb1d2f182f2c7decd199bd7ca854baaf5fb1acf322297257d20bcf75a0",
+            "content_sha256_ordered_checksum": "2b9b28d55b07245e3040aa0bcbcd14cd4a9598e4b55202b759d7f515aeb1cbfa",
+            "source_id_content_joint_checksum": "24eea2e3cb75c2910de142154803e8bdd98fcba6f12c61293de997faccff43ef",
+        },
+    },
+    "selection_384": {
+        "count": 384,
+        "selected_source_pair_ids_sha256": "afa0aea6a159eb3b4f68077da8a665e1c277d47815d01398633af5cfe8e53b51",
+        "selected_artifact_ids_sha256": "2dad8b0ee67b7c3cbc8a621826c64cd7cb87bf78965a93e58c4519f092bd07c0",
+        "source_to_artifact_mapping_sha256": "d755522b3f3e492d3543400f5fe07fd2ba354f62e89525f7170e3432cc178b96",
+    },
+    "selection_full": {
+        "count": 30000,
+        "selected_source_pair_ids_sha256": "495a55ae9bad6e464684b3b205ae6b591f5abb424dd5c0fdb98f2ad3db63be70",
+        "selected_artifact_ids_sha256": "0a6d3beb1d2f182f2c7decd199bd7ca854baaf5fb1acf322297257d20bcf75a0",
+        "source_to_artifact_mapping_sha256": "fe500cf664524e54dfe55702418b03d717e5a25468f673b36fad5cdf5f82f2d9",
+    },
+}
 
 
 def sample_dataset(dataset: Any, count: int, seed: int) -> Any:
@@ -211,6 +259,17 @@ def build_hans_content_integrity_manifest(
         identities = [str(value) for value in ids_by_partition[name]]
         if len(records) != len(identities) or not records:
             raise ValueError(f"HANS content {name} records do not align with identities")
+        physical_source = "evaluation" if name == "evaluation" else "train"
+        for record, identity in zip(records, identities):
+            canonical_pair_id = record.get("canonical_pair_id")
+            if (
+                not isinstance(canonical_pair_id, str)
+                or canonical_pair_id != identity
+                or qualify_hans_pair_id(identity, physical_source) != identity
+            ):
+                raise ValueError(
+                    f"HANS content {name} canonical_pair_id does not equal its parallel qualified identity"
+                )
         hashes = [_hans_content_identity(record) for record in records]
         duplicate_count = len(hashes) - len(set(hashes))
         partitions[name] = {
@@ -269,7 +328,13 @@ def validate_hans_content_integrity(
                 raise ValueError(f"HANS content {label} overlap detected: {preview}")
 
 
-def validate_hans_manifest_identities(hans: Mapping[str, Any]) -> list[str]:
+def validate_hans_manifest_identities(
+    hans: Mapping[str, Any],
+    *,
+    expected_seed: int | None = None,
+    expected_selection_cap: int | None | object = ...,
+    official_anchors: Mapping[str, Any] | None = None,
+) -> list[str]:
     """Validate HANS manifest arrays/checksums and return ordered evaluation IDs."""
     expected_sources = {
         "build": "train",
@@ -318,13 +383,219 @@ def validate_hans_manifest_identities(hans: Mapping[str, Any]) -> list[str]:
         full_partitions["dev"],
         full_partitions["evaluation"],
     )
-    if set(hans) != {*expected_sources, "content_integrity"}:
-        raise ValueError("HANS content integrity object is missing or unexpected")
+    if set(hans) != {
+        *expected_sources,
+        "split_integrity",
+        "content_integrity",
+        "selection_integrity",
+    }:
+        raise ValueError("HANS split/content/selection integrity objects are missing or unexpected")
+    _validate_hans_split_integrity_manifest(
+        hans["split_integrity"],
+        {name: full_partitions[name] for name in ("build", "dev")},
+        expected_seed=expected_seed,
+    )
     _validate_hans_content_integrity_manifest(
         hans["content_integrity"],
         full_partitions,
     )
+    _validate_hans_selection_integrity_manifest(
+        hans["selection_integrity"],
+        list(hans["evaluation"]["selected_ids"]),
+        expected_seed=expected_seed,
+        expected_cap=expected_selection_cap,
+    )
+    if official_anchors is not None:
+        _validate_official_hans_anchors(
+            hans,
+            official_anchors,
+            expected_selection_cap=expected_selection_cap,
+        )
     return list(hans["evaluation"]["selected_ids"])
+
+
+def _validate_hans_split_integrity_manifest(
+    integrity: Any,
+    qualified_ids: Mapping[str, Sequence[str]],
+    *,
+    expected_seed: int | None,
+) -> None:
+    keys = {
+        "schema_version", "seed", "split_algorithm", "checksum_algorithm",
+        "build_count", "dev_count", "build_source_pair_ids",
+        "dev_source_pair_ids", "small_strata", "split_checksum",
+    }
+    if (
+        not isinstance(integrity, Mapping)
+        or set(integrity) != keys
+        or integrity.get("schema_version") != "hans_split_integrity_v1"
+        or integrity.get("split_algorithm") != _HANS_SPLIT_ALGORITHM
+        or integrity.get("checksum_algorithm") != _HANS_CONTENT_ALGORITHM
+        or not isinstance(integrity.get("seed"), int)
+        or isinstance(integrity.get("seed"), bool)
+        or integrity.get("seed", -1) < 0
+        or (expected_seed is not None and integrity.get("seed") != expected_seed)
+    ):
+        raise ValueError("HANS split integrity declaration is invalid")
+    raw: dict[str, list[str]] = {}
+    for name in ("build", "dev"):
+        values = integrity.get(f"{name}_source_pair_ids")
+        if (
+            not isinstance(values, list)
+            or not values
+            or not all(isinstance(value, str) and _HANS_LOCAL_ID_RE.fullmatch(value) for value in values)
+            or len(values) != len(set(values))
+            or integrity.get(f"{name}_count") != len(values)
+            or [qualify_hans_pair_id(value, "train") for value in values]
+            != list(qualified_ids[name])
+        ):
+            raise ValueError(f"HANS split integrity {name} raw/artifact binding is invalid")
+        raw[name] = values
+    if set(raw["build"]) & set(raw["dev"]):
+        raise ValueError("HANS split integrity build/dev raw identities are not disjoint")
+    small = integrity.get("small_strata")
+    small_keys = {
+        "gold_label", "heuristic", "subcase", "count",
+        "build_source_pair_ids", "dev_source_pair_ids",
+    }
+    if not isinstance(small, list):
+        raise ValueError("HANS split integrity small strata are invalid")
+    for item in small:
+        if not isinstance(item, Mapping) or set(item) != small_keys:
+            raise ValueError("HANS split integrity small stratum schema is invalid")
+        build_ids = item["build_source_pair_ids"]
+        dev_ids = item["dev_source_pair_ids"]
+        if (
+            not isinstance(build_ids, list)
+            or not isinstance(dev_ids, list)
+            or not all(isinstance(value, str) and _HANS_LOCAL_ID_RE.fullmatch(value) for value in [*build_ids, *dev_ids])
+            or item.get("count") != len(build_ids) + len(dev_ids)
+            or item.get("count", 5) >= 5
+            or not set(build_ids).issubset(raw["build"])
+            or not set(dev_ids).issubset(raw["dev"])
+        ):
+            raise ValueError("HANS split integrity small stratum membership is invalid")
+    checksum_payload = {
+        "schema_version": "hans_split_v1",
+        "hans_split_seed": integrity["seed"],
+        "build_pair_ids": raw["build"],
+        "dev_pair_ids": raw["dev"],
+        "small_strata": [
+            {
+                "gold_label": item["gold_label"],
+                "heuristic": item["heuristic"],
+                "subcase": item["subcase"],
+                "count": item["count"],
+                "build_pair_ids": item["build_source_pair_ids"],
+                "dev_pair_ids": item["dev_source_pair_ids"],
+            }
+            for item in small
+        ],
+    }
+    if integrity.get("split_checksum") != sha256(_canonical_bytes(checksum_payload)).hexdigest():
+        raise ValueError("HANS split integrity checksum is invalid")
+
+
+def _validate_hans_selection_integrity_manifest(
+    integrity: Any,
+    selected_artifact_ids: Sequence[str],
+    *,
+    expected_seed: int | None,
+    expected_cap: int | None | object,
+) -> None:
+    payload_keys = {
+        "schema_version", "ranking_key", "ranking_algorithm", "artifact_transform",
+        "selected_order", "seed", "strata_fields", "cap", "selected_count",
+        "selected_source_pair_ids", "selected_source_pair_ids_sha256",
+        "selected_artifact_ids_sha256", "source_to_artifact_mapping_sha256",
+    }
+    if not isinstance(integrity, Mapping) or set(integrity) != {*payload_keys, "integrity_checksum"}:
+        raise ValueError("HANS selection integrity schema is invalid")
+    cap = integrity.get("cap")
+    if (
+        integrity.get("schema_version") != "hans_selection_integrity_v1"
+        or integrity.get("ranking_key") != "source_local_pair_id"
+        or integrity.get("ranking_algorithm") != _HANS_SELECTION_ALGORITHM
+        or integrity.get("artifact_transform") != _HANS_ARTIFACT_TRANSFORM
+        or integrity.get("selected_order") != ("source_order" if cap is None else "ranked_cap_order")
+        or integrity.get("strata_fields") != ["gold_label", "heuristic", "subcase"]
+        or not isinstance(integrity.get("seed"), int)
+        or isinstance(integrity.get("seed"), bool)
+        or integrity.get("seed", -1) < 0
+        or (expected_seed is not None and integrity.get("seed") != expected_seed)
+        or (cap is not None and (not isinstance(cap, int) or isinstance(cap, bool) or cap < 0))
+        or (expected_cap is not ... and cap != expected_cap)
+    ):
+        raise ValueError("HANS selection integrity declaration is invalid")
+    source_ids = integrity.get("selected_source_pair_ids")
+    artifact_ids = list(selected_artifact_ids)
+    if (
+        not isinstance(source_ids, list)
+        or not source_ids
+        or not all(isinstance(value, str) and _HANS_LOCAL_ID_RE.fullmatch(value) for value in source_ids)
+        or len(source_ids) != len(set(source_ids))
+        or integrity.get("selected_count") != len(source_ids)
+        or len(source_ids) != len(artifact_ids)
+        or (cap is not None and len(source_ids) != cap)
+        or [qualify_hans_pair_id(value, "evaluation") for value in source_ids] != artifact_ids
+        or integrity.get("selected_source_pair_ids_sha256") != _ordered_checksum(source_ids)
+        or integrity.get("selected_artifact_ids_sha256") != _ordered_checksum(artifact_ids)
+        or integrity.get("source_to_artifact_mapping_sha256")
+        != _ordered_checksum([[raw, artifact] for raw, artifact in zip(source_ids, artifact_ids)])
+    ):
+        raise ValueError("HANS selection integrity raw/artifact mapping is invalid")
+    payload = {key: integrity[key] for key in payload_keys}
+    if integrity.get("integrity_checksum") != _ordered_checksum(
+        [[key, payload[key]] for key in sorted(payload)]
+    ):
+        raise ValueError("HANS selection integrity checksum is invalid")
+
+
+def _validate_official_hans_anchors(
+    hans: Mapping[str, Any],
+    anchors: Mapping[str, Any],
+    *,
+    expected_selection_cap: int | None | object,
+) -> None:
+    if anchors.get("schema_version") != "hans_official_semantic_anchors_v1":
+        raise ValueError("official HANS semantic anchors schema is invalid")
+    split = hans["split_integrity"]
+    if split.get("split_checksum") != anchors.get("split_checksum"):
+        raise ValueError("official HANS split semantic anchor mismatch")
+    for name in ("build", "dev", "evaluation"):
+        expected = anchors["partitions"][name]
+        identity = hans[name]
+        content = hans["content_integrity"]["partitions"][name]
+        if (
+            identity.get("full_count") != expected["count"]
+            or identity.get("full_ids_sha256") != expected["qualified_ids_sha256"]
+            or content.get("count") != expected["count"]
+            or content.get("content_sha256_ordered_checksum")
+            != expected["content_sha256_ordered_checksum"]
+            or content.get("source_id_content_joint_checksum")
+            != expected["source_id_content_joint_checksum"]
+        ):
+            raise ValueError(f"official HANS {name} content/identity semantic anchor mismatch")
+    for name in ("build", "dev"):
+        if _ordered_checksum(split[f"{name}_source_pair_ids"]) != anchors["partitions"][name]["source_pair_ids_sha256"]:
+            raise ValueError(f"official HANS {name} source membership anchor mismatch")
+    anchor_name = (
+        "selection_full"
+        if expected_selection_cap is None
+        else f"selection_{expected_selection_cap}"
+    )
+    if anchor_name not in anchors:
+        raise ValueError("official HANS selection cap is not frozen")
+    expected_selection = anchors[anchor_name]
+    selection = hans["selection_integrity"]
+    actual_selection = {
+        "count": selection.get("selected_count"),
+        "selected_source_pair_ids_sha256": selection.get("selected_source_pair_ids_sha256"),
+        "selected_artifact_ids_sha256": selection.get("selected_artifact_ids_sha256"),
+        "source_to_artifact_mapping_sha256": selection.get("source_to_artifact_mapping_sha256"),
+    }
+    if actual_selection != expected_selection:
+        raise ValueError("official HANS selection semantic anchor mismatch")
 
 
 def _validate_hans_content_integrity_manifest(
@@ -435,6 +706,180 @@ class HansSplit:
         }
 
 
+def build_hans_split_integrity(split: HansSplit) -> dict[str, Any]:
+    """Persist raw-only build/dev split membership with the frozen checksum."""
+    build_source_ids = [
+        str(_record_value(row, "source_pair_id", "pairID"))
+        for row in split.build_records
+    ]
+    dev_source_ids = [
+        str(_record_value(row, "source_pair_id", "pairID"))
+        for row in split.dev_records
+    ]
+    for name, records, source_ids in (
+        ("build", split.build_records, build_source_ids),
+        ("dev", split.dev_records, dev_source_ids),
+    ):
+        for record, source_id in zip(records, source_ids):
+            if _HANS_LOCAL_ID_RE.fullmatch(source_id) is None:
+                raise ValueError(f"HANS split {name} source-local identity is invalid")
+            if record.get("canonical_pair_id") != qualify_hans_pair_id(source_id, "train"):
+                raise ValueError(f"HANS split {name} source/artifact identity binding is invalid")
+    small_strata = []
+    for item in split.small_strata:
+        build_ids = list(item.get("build_pair_ids", []))
+        dev_ids = list(item.get("dev_pair_ids", []))
+        if not all(
+            isinstance(value, str) and _HANS_LOCAL_ID_RE.fullmatch(value)
+            for value in [*build_ids, *dev_ids]
+        ):
+            raise ValueError("HANS split small-strata membership must use raw source-local IDs")
+        small_strata.append(
+            {
+                "gold_label": item.get("gold_label"),
+                "heuristic": item.get("heuristic"),
+                "subcase": item.get("subcase"),
+                "count": item.get("count"),
+                "build_source_pair_ids": build_ids,
+                "dev_source_pair_ids": dev_ids,
+            }
+        )
+    checksum_payload = {
+        "schema_version": "hans_split_v1",
+        "hans_split_seed": split.seed,
+        "build_pair_ids": build_source_ids,
+        "dev_pair_ids": dev_source_ids,
+        "small_strata": [
+            {
+                "gold_label": item["gold_label"],
+                "heuristic": item["heuristic"],
+                "subcase": item["subcase"],
+                "count": item["count"],
+                "build_pair_ids": item["build_source_pair_ids"],
+                "dev_pair_ids": item["dev_source_pair_ids"],
+            }
+            for item in small_strata
+        ],
+    }
+    checksum = sha256(_canonical_bytes(checksum_payload)).hexdigest()
+    if checksum != split.checksum:
+        raise ValueError("HANS split checksum does not match raw source-local membership")
+    return {
+        "schema_version": "hans_split_integrity_v1",
+        "seed": split.seed,
+        "split_algorithm": _HANS_SPLIT_ALGORITHM,
+        "checksum_algorithm": _HANS_CONTENT_ALGORITHM,
+        "build_count": len(build_source_ids),
+        "dev_count": len(dev_source_ids),
+        "build_source_pair_ids": build_source_ids,
+        "dev_source_pair_ids": dev_source_ids,
+        "small_strata": small_strata,
+        "split_checksum": checksum,
+    }
+
+
+def build_hans_selection_integrity(
+    selected_records: Sequence[Mapping[str, Any]],
+    selected_artifact_ids: Sequence[str],
+    *,
+    limit: int | None,
+    seed: int,
+) -> dict[str, Any]:
+    """Bind raw evaluation ranking IDs to ordered qualified artifact IDs."""
+    if not isinstance(seed, int) or isinstance(seed, bool) or seed < 0:
+        raise ValueError("HANS selection seed must be a non-negative integer")
+    if limit is not None and (
+        not isinstance(limit, int) or isinstance(limit, bool) or limit < 0
+    ):
+        raise ValueError("HANS selection cap must be a non-negative integer or null")
+    rows = [dict(record) for record in selected_records]
+    artifact_ids = list(selected_artifact_ids)
+    if not rows or len(rows) != len(artifact_ids):
+        raise ValueError("HANS selection source rows do not align with artifact identities")
+    if limit is not None and len(rows) != limit:
+        raise ValueError("HANS selection membership does not equal its cap")
+    source_ids = []
+    for record, artifact_id in zip(rows, artifact_ids):
+        source_id = record.get("pairID")
+        expected = qualify_hans_pair_id(source_id, "evaluation")
+        if record.get("canonical_pair_id") != expected or artifact_id != expected:
+            raise ValueError("HANS selection raw-to-qualified identity mapping is invalid")
+        source_ids.append(str(source_id))
+    if len(source_ids) != len(set(source_ids)) or len(artifact_ids) != len(set(artifact_ids)):
+        raise ValueError("HANS selection contains duplicate identities")
+    payload = {
+        "schema_version": "hans_selection_integrity_v1",
+        "ranking_key": "source_local_pair_id",
+        "ranking_algorithm": _HANS_SELECTION_ALGORITHM,
+        "artifact_transform": _HANS_ARTIFACT_TRANSFORM,
+        "selected_order": "source_order" if limit is None else "ranked_cap_order",
+        "seed": seed,
+        "strata_fields": ["gold_label", "heuristic", "subcase"],
+        "cap": limit,
+        "selected_count": len(source_ids),
+        "selected_source_pair_ids": source_ids,
+        "selected_source_pair_ids_sha256": _ordered_checksum(source_ids),
+        "selected_artifact_ids_sha256": _ordered_checksum(artifact_ids),
+        "source_to_artifact_mapping_sha256": _ordered_checksum(
+            [[source_id, artifact_id] for source_id, artifact_id in zip(source_ids, artifact_ids)]
+        ),
+    }
+    payload["integrity_checksum"] = _ordered_checksum(
+        [[key, payload[key]] for key in sorted(payload)]
+    )
+    return payload
+
+
+def hans_manifest_identity_summary(hans: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the exact compact HANS identity/integrity audit binding."""
+    names = ("build", "dev", "evaluation")
+    split = hans["split_integrity"]
+    content = hans["content_integrity"]
+    selection = hans["selection_integrity"]
+    return {
+        "identity_counts": {name: hans[name]["full_count"] for name in names},
+        "identity_checksums": {name: hans[name]["full_ids_sha256"] for name in names},
+        "split_integrity_summary": {
+            "schema_version": split["schema_version"],
+            "build_count": split["build_count"],
+            "dev_count": split["dev_count"],
+            "build_source_pair_ids_sha256": _ordered_checksum(
+                split["build_source_pair_ids"]
+            ),
+            "dev_source_pair_ids_sha256": _ordered_checksum(
+                split["dev_source_pair_ids"]
+            ),
+            "split_checksum": split["split_checksum"],
+        },
+        "content_integrity_summary": {
+            "schema_version": content["schema_version"],
+            "partitions": {
+                name: {
+                    "count": content["partitions"][name]["count"],
+                    "content_sha256_ordered_checksum": content["partitions"][name][
+                        "content_sha256_ordered_checksum"
+                    ],
+                    "source_id_content_joint_checksum": content["partitions"][name][
+                        "source_id_content_joint_checksum"
+                    ],
+                }
+                for name in names
+            },
+            "overlap_counts": dict(content["overlap_counts"]),
+        },
+        "selection_integrity_summary": {
+            key: selection[key]
+            for key in (
+                "schema_version", "ranking_key", "ranking_algorithm",
+                "artifact_transform", "selected_order", "seed", "strata_fields",
+                "cap", "selected_count", "selected_source_pair_ids_sha256",
+                "selected_artifact_ids_sha256", "source_to_artifact_mapping_sha256",
+                "integrity_checksum",
+            )
+        },
+    }
+
+
 def _default_rng_factory(seed: int) -> Any:
     import numpy as np
 
@@ -480,7 +925,7 @@ def split_hans_records(
                     "heuristic": stratum[1],
                     "subcase": stratum[2],
                     "count": count,
-                    "build_pair_ids": [artifact_id for _, artifact_id, _ in ordered],
+                    "build_pair_ids": [pair_id for pair_id, _, _ in ordered],
                     "dev_pair_ids": [],
                 }
             )

@@ -12,10 +12,32 @@ import re
 from typing import Any, Mapping, Sequence
 
 from canonical.artifacts import sha256_file
-from canonical.data import validate_hans_manifest_identities
+from canonical.data import (
+    HANS_OFFICIAL_ANCHORS_V1,
+    hans_manifest_identity_summary,
+    validate_hans_manifest_identities,
+)
 from canonical.hans import aggregate_hans_predictions
 from canonical.runner import _METHOD_OUTPUTS, _SHARED_OUTPUTS
 from canonical.stage2_contract import STAGE2_SEED
+
+
+_IDENTITY_KEYS = {
+    "source", "split", "id_strategy", "preferred_id_fields", "strata_fields",
+    "selection_seed", "selected_limit", "full_count", "selected_count",
+    "full_ids", "selected_ids", "full_ids_sha256", "selected_ids_sha256",
+}
+_STAGE2_DATA_PROFILE = {
+    ("mnli", "train"): ("nyu-mll/glue:mnli", "train", ["idx", "row_id", "id", "uid"], [], 100000, 96, 96),
+    ("mnli", "validation_matched"): ("nyu-mll/glue:mnli", "validation_matched", ["idx", "row_id", "id", "uid"], [], 5000, 96, 96),
+    ("hans", "build"): ("tommccoy1/hans", "build", ["pairID"], [], 24000, 24000, None),
+    ("hans", "dev"): ("tommccoy1/hans", "dev", ["pairID"], [], 6000, 6000, None),
+    ("hans", "evaluation"): ("tommccoy1/hans", "evaluation", ["pairID"], ["gold_label", "heuristic", "subcase"], 30000, 384, 384),
+    ("ood", "esnli"): ("e-SNLI", "test", ["pairID", "uid", "id", "idx"], [], None, 128, 128),
+    ("ood", "anli"): ("facebook/anli", "test", ["pairID", "uid", "id", "idx"], [], None, 128, 128),
+    ("ood", "snli_hard"): ("snli_1.0_test_hard", "test", ["pairID", "uid", "id", "idx"], [], None, 128, 128),
+    ("ood", "wanli"): ("alisawuffles/WANLI", "test", ["pairID", "uid", "id", "idx"], [], None, 128, 128),
+}
 
 
 def _reject_json_constant(value: str) -> None:
@@ -123,7 +145,12 @@ def _finite_positive_weights(metadata: Mapping[str, Any]) -> dict[str, float]:
     return normalized
 
 
-def _validate_manifest_identity_audit(events: Sequence[Mapping[str, Any]], *, source: Path) -> None:
+def _validate_manifest_identity_audit(
+    events: Sequence[Mapping[str, Any]],
+    *,
+    source: Path,
+    expected_summary: Mapping[str, Any],
+) -> None:
     if len(events) != 2:
         raise ValueError(f"manifest identity audit must contain its access and summary events: {source}")
     for sequence, event in enumerate(events):
@@ -135,8 +162,13 @@ def _validate_manifest_identity_audit(events: Sequence[Mapping[str, Any]], *, so
             if set(event) != {"sequence", "timestamp", "event", "dataset", "split", "purpose"}:
                 raise ValueError(f"invalid manifest identity audit access schema: {source}")
         elif sequence == 1 and event.get("event") == "manifest_identity_summary":
-            required = {"sequence", "timestamp", "event", "dataset", "split", "purpose", "identity_counts", "identity_checksums"}
-            if set(event) != required or not isinstance(event["identity_counts"], Mapping) or not isinstance(event["identity_checksums"], Mapping):
+            summary_keys = {
+                "identity_counts", "identity_checksums", "split_integrity_summary",
+                "content_integrity_summary", "selection_integrity_summary",
+            }
+            required = {"sequence", "timestamp", "event", "dataset", "split", "purpose", *summary_keys}
+            actual_summary = {key: event.get(key) for key in summary_keys}
+            if set(event) != required or actual_summary != dict(expected_summary):
                 raise ValueError(f"invalid manifest identity audit summary schema: {source}")
         else:
             raise ValueError(f"invalid manifest identity audit event type: {source}")
@@ -347,7 +379,99 @@ def _validate_class_prior_log(run_dir: Path, weights: Mapping[str, float]) -> No
             raise ValueError(f"class-prior branch log does not prove loading weight {label}: {weight}")
 
 
-def _root_common(root: Path) -> tuple[dict[str, str], dict[str, Any], list[str]]:
+def _identity_ids_checksum(values: Sequence[str]) -> str:
+    from hashlib import sha256
+
+    payload = json.dumps(
+        list(values),
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return sha256(payload).hexdigest()
+
+
+def _validate_stage2_identity_entry(
+    entry: Any,
+    *,
+    group: str,
+    name: str,
+) -> None:
+    source, split, preferred, strata, full_count, selected_count, selected_limit = (
+        _STAGE2_DATA_PROFILE[(group, name)]
+    )
+    if not isinstance(entry, Mapping) or set(entry) != _IDENTITY_KEYS:
+        raise ValueError(f"Stage 2 data profile identity schema is invalid for {group}.{name}")
+    full_ids = entry.get("full_ids")
+    selected_ids = entry.get("selected_ids")
+    if (
+        entry.get("source") != source
+        or entry.get("split") != split
+        or entry.get("id_strategy") != "preferred_field_or_content_sha256"
+        or entry.get("preferred_id_fields") != preferred
+        or entry.get("strata_fields") != strata
+        or entry.get("selection_seed") != 42
+        or entry.get("selected_limit") != selected_limit
+        or not isinstance(full_ids, list)
+        or not isinstance(selected_ids, list)
+        or not full_ids
+        or not selected_ids
+        or not all(isinstance(value, str) and value for value in [*full_ids, *selected_ids])
+        or len(full_ids) != len(set(full_ids))
+        or len(selected_ids) != len(set(selected_ids))
+        or not set(selected_ids).issubset(full_ids)
+        or entry.get("full_count") != len(full_ids)
+        or entry.get("selected_count") != len(selected_ids)
+        or (full_count is not None and len(full_ids) != full_count)
+        or (full_count is None and len(full_ids) < selected_count)
+        or len(selected_ids) != selected_count
+        or entry.get("full_ids_sha256") != _identity_ids_checksum(full_ids)
+        or entry.get("selected_ids_sha256") != _identity_ids_checksum(selected_ids)
+    ):
+        raise ValueError(f"Stage 2 data profile provenance/count/checksum is invalid for {group}.{name}")
+    if selected_limit is None and selected_ids != full_ids:
+        raise ValueError(f"Stage 2 uncapped membership differs for {group}.{name}")
+
+
+def _validate_stage2_data_manifest(data_manifest: Any) -> list[str]:
+    if (
+        not isinstance(data_manifest, Mapping)
+        or set(data_manifest) != {
+            "schema_version", "scope", "data_seed", "hans_split_seed",
+            "mnli", "hans", "ood",
+        }
+        or data_manifest.get("schema_version") != "canonical_data_manifest_v4"
+        or data_manifest.get("scope") != "stage2_smoke"
+        or data_manifest.get("data_seed") != 42
+        or data_manifest.get("hans_split_seed") != 42
+    ):
+        raise ValueError("data manifest schema/scope/seeds do not match the frozen Stage 2 profile")
+    expected_groups = {
+        "mnli": {"train", "validation_matched"},
+        "hans": {
+            "build", "dev", "evaluation", "split_integrity",
+            "content_integrity", "selection_integrity",
+        },
+        "ood": {"esnli", "anli", "snli_hard", "wanli"},
+    }
+    for group, names in expected_groups.items():
+        mapping = data_manifest.get(group)
+        if not isinstance(mapping, Mapping) or set(mapping) != names:
+            raise ValueError(f"Stage 2 data profile lacks exact {group} entries")
+    for group, name in _STAGE2_DATA_PROFILE:
+        _validate_stage2_identity_entry(data_manifest[group][name], group=group, name=name)
+    return validate_hans_manifest_identities(
+        data_manifest["hans"],
+        expected_seed=42,
+        expected_selection_cap=_STAGE2_DATA_PROFILE[("hans", "evaluation")][6],
+        official_anchors=HANS_OFFICIAL_ANCHORS_V1,
+    )
+
+
+def _root_common(
+    root: Path,
+) -> tuple[dict[str, Any], dict[str, Any], list[str], dict[str, Any]]:
     snapshot = root / "protocol_snapshot"
     protocol = snapshot / "FROZEN_EXPERIMENT_PROTOCOL.md"
     recorded_protocol = snapshot / "protocol_sha256.txt"
@@ -361,9 +485,7 @@ def _root_common(root: Path) -> tuple[dict[str, str], dict[str, Any], list[str]]
     if not data.is_file() or not environment.is_file():
         raise ValueError("smoke root lacks data or environment manifest")
     data_manifest = _read_json(data)
-    if data_manifest.get("schema_version") != "canonical_data_manifest_v3":
-        raise ValueError("data manifest schema must be canonical_data_manifest_v3")
-    expected_hans_ids = validate_hans_manifest_identities(data_manifest.get("hans"))
+    expected_hans_ids = _validate_stage2_data_manifest(data_manifest)
     data_seed = _require_seed(data_manifest.get("data_seed"), name="data_manifest.data_seed")
     hans_split_seed = _require_seed(
         data_manifest.get("hans_split_seed"), name="data_manifest.hans_split_seed"
@@ -378,6 +500,7 @@ def _root_common(root: Path) -> tuple[dict[str, str], dict[str, Any], list[str]]
         },
         _read_json(environment),
         expected_hans_ids,
+        hans_manifest_identity_summary(data_manifest["hans"]),
     )
 
 
@@ -398,7 +521,7 @@ def validate_smoke_root(
         expected_omission = f"seed_{STAGE2_SEED}/shared_phase2/checkpoints/shared.pt"
         if set(omissions) != {expected_omission} or not isinstance(omissions[expected_omission], str) or re.fullmatch(r"[0-9a-f]{64}", omissions[expected_omission]) is None:
             raise ValueError("weight-optional validation requires the exact shared checkpoint omission")
-    common, _environment, expected_hans_ids = _root_common(root)
+    common, _environment, expected_hans_ids, expected_audit_summary = _root_common(root)
     commands = _read_json(root / "commands.json")
     if commands.get("profile_name") != "stage2_smoke_v1":
         raise ValueError("commands.json profile_name is not the frozen Stage 2 smoke profile")
@@ -407,6 +530,7 @@ def validate_smoke_root(
     _validate_manifest_identity_audit(
         _read_jsonl(root / "manifests" / "data_access.jsonl"),
         source=root / "manifests" / "data_access.jsonl",
+        expected_summary=expected_audit_summary,
     )
     matrix = _read_json(root / "manifests" / "run_matrix.json")
     seeds = matrix.get("training_seeds")
@@ -511,7 +635,7 @@ def _scrub_transient(value: Any) -> Any:
 
 
 def _repeat_full_sr(root: Path) -> tuple[Mapping[str, Any], Mapping[str, Any], Mapping[str, Any], Mapping[str, Any]]:
-    common, environment, _expected_hans_ids = _root_common(root)
+    common, environment, _expected_hans_ids, _expected_audit_summary = _root_common(root)
     matrices = _read_json(root / "manifests" / "run_matrix.json")
     seeds = matrices.get("training_seeds")
     if not isinstance(seeds, list) or len(seeds) != 1 or not isinstance(seeds[0], int):
@@ -547,7 +671,7 @@ def _validate_a100_root_identity(
         raise ValueError("A100 smoke environment must be colab_a100")
     if commands.get("expected_condition_tags") != list(conditions):
         raise ValueError("A100 smoke condition tags do not match its required matrix")
-    common, environment, _expected_hans_ids = _root_common(root)
+    common, environment, _expected_hans_ids, _expected_audit_summary = _root_common(root)
     del common
     gpu = commands.get("gpu_name")
     if not isinstance(gpu, str) or "A100" not in gpu or environment.get("gpu") != gpu:

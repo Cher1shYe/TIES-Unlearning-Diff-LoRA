@@ -15,7 +15,7 @@
 - Smoke budgets are fixed at sequence length 64, batch size 8, MNLI 96/96, one epoch per phase, four Phase-2 batches, KL 1/2/1, kNN k=3, analysis counts 16/8 and 8/4 per HANS label group, HANS evaluation 384, and 128 for each other OOD evaluation set.
 - `data_seed=42`, `hans_split_seed=42`, and `training_seed=42` remain separated.
 - Official HANS evaluation may be accessed only after the `final_evaluation_start` audit event.
-- Official HANS `pairID` is source-file-local: retain validated raw `exN` solely for within-file split/cap ranking, and immediately create `hans_train::<pairID>` or `hans_evaluation::<pairID>` for artifacts. The prefix never enters the cap hash; build/dev share the train namespace. An independent exact-content gate excludes `pairID`, rejects duplicate/overlapping rows, and is persisted in `canonical_data_manifest_v3` with ordered and joint checksums.
+- Official HANS `pairID` is source-file-local: retain validated raw `exN` solely for within-file split/cap ranking, and immediately create `hans_train::<pairID>` or `hans_evaluation::<pairID>` for artifacts. The prefix never enters the cap hash; build/dev share the train namespace. `canonical_data_manifest_v4` persists raw-only split membership (including raw small strata), exact content evidence excluding `pairID`, and raw-to-qualified selection evidence; every builder record ID is bound rowwise to the parallel qualified ID. Validators pin these objects to official semantic anchors and require an exact Stage 2 profile plus an exact root audit-summary cross-binding.
 - A100 repeat success means `abs(run1_hans_non_entailment - repeat_hans_non_entailment) <= 0.005`.
 - Production monitoring is 300-second checks, 3,600-second `STALL_WARNING`, and 43,200-second hard timeout. Only hard timeout auto-terminates.
 - Smoke output must be under `ties_results/stage2_smoke/`; any path containing a component named `canonical_v1` is rejected.
@@ -43,6 +43,38 @@
 - `monitor_stage2_job.py`: monitor CLI.
 - `freeze_stage2_environment.py`: freeze-bundle CLI.
 - `package_stage2_source.py`: exact clean-commit source package CLI for Colab transfer.
+
+## Round 3 HANS v4 Frozen Identity Constants
+
+Algorithms are frozen as follows: official derivation
+`official_tsv_canonical_json_utf8_sha256_v1`; split
+`source_local_id_sort_numpy_default_rng_per_stratum_v1`; checksum/content
+`sha256_canonical_json_utf8_v1`; selection
+`sha256_seed_nul_source_local_id_stratified_round_robin_v1` over ranking key
+`source_local_pair_id`, with transform
+`hans_evaluation::<source_local_pair_id>`, seed 42, strata
+`gold_label,heuristic,subcase`, and cap 384 for Stage 2 smoke.
+
+Complete source/split/partition anchors:
+
+| Anchor | Full value |
+|---|---|
+| train file | `49245bd5fdb0b185dcbfbf48f0f16513c62ad5bc9fad0b8800dc48d6818ee5cf` |
+| evaluation file | `c55b62feef9913070e88f38938dc2492018c945ac81f70139346472494124e79` |
+| split | `f2d240a1709481a8c37c0721104697469383e9ad49ed22496f9265633c9f129a` |
+| build raw / qualified / content / joint | `cf37089c0550410096e718e8c5a8f996650afe0afcef91c2660f27ce43560eab` / `cd8e7f745cc93703a71bd9c62b36647a8c3fe04596528f1b5a4be002ebe74bcc` / `3eea3fea671f926bcc3975dd01595d70842e37ae3ede45b8324d37b2a6dd6de1` / `c74c88f8edcfd138b99b21571e45fc0520c460eba194edc75dfd7da20f5bde5c` |
+| dev raw / qualified / content / joint | `53f63723dfe459bfbd1b1ffe045af5d61beb3181ba37a379dfa96f92e08c1ba8` / `f2d2fd8a0c43d8d1c449ab4ed990eedf7d3600afbdd38c0ac8ec0ccde07887ce` / `d949b61e6d75889de00d1266ee73633bde9181e23be110005cb106c4328aa8d7` / `48f62af7a35125b87195fa0c6590918bf472de9b5b1315e303d9e10fd2ac214b` |
+| evaluation raw / qualified / content / joint | `495a55ae9bad6e464684b3b205ae6b591f5abb424dd5c0fdb98f2ad3db63be70` / `0a6d3beb1d2f182f2c7decd199bd7ca854baaf5fb1acf322297257d20bcf75a0` / `2b9b28d55b07245e3040aa0bcbcd14cd4a9598e4b55202b759d7f515aeb1cbfa` / `24eea2e3cb75c2910de142154803e8bdd98fcba6f12c61293de997faccff43ef` |
+| cap-384 raw / qualified / mapping | `afa0aea6a159eb3b4f68077da8a665e1c277d47815d01398633af5cfe8e53b51` / `2dad8b0ee67b7c3cbc8a621826c64cd7cb87bf78965a93e58c4519f092bd07c0` / `d755522b3f3e492d3543400f5fe07fd2ba354f62e89525f7170e3432cc178b96` |
+| full raw / qualified / mapping | `495a55ae9bad6e464684b3b205ae6b591f5abb424dd5c0fdb98f2ad3db63be70` / `0a6d3beb1d2f182f2c7decd199bd7ca854baaf5fb1acf322297257d20bcf75a0` / `fe500cf664524e54dfe55702418b03d717e5a25468f673b36fad5cdf5f82f2d9` |
+
+Counts are build/dev/evaluation `24000/6000/30000`; official small strata
+are the raw-ID list `[]`. The Stage 2 profile is exact: v4, scope
+`stage2_smoke`, data/split seeds 42, MNLI `100000/5000` full and `96/96`
+selected, HANS evaluation selected 384, and every non-HANS OOD selected 128,
+with frozen source/split/provenance fields. `manifest_identity_summary` must
+equal the manifest-derived identity counts/checksums and split/content/selection
+summaries exactly.
 - `notebooks/stage2_colab_a100_smoke.ipynb`: thin A100 executor using the committed source archive.
 - `tests/test_stage2_smoke.py`: profile, subset, path, and repeat contracts.
 - `tests/test_stage2_data_audit.py`: selection, identities, audit order, and manifests.
@@ -437,7 +469,7 @@ Rename the existing private raw loaders to the public names and make final loade
 
 - [ ] **Step 5: Extend backend manifest initialization**
 
-`RealCanonicalBackend.initialize_manifests()` uses its base config to distinguish smoke-selected caps from full canonical selection. MNLI records the sampled fixed membership; HANS records build/dev/evaluation full IDs, selected evaluation IDs, and versioned ordered content-integrity evidence; every OOD dataset records full and selected identities. The top-level manifest includes `schema_version="canonical_data_manifest_v3"` and `scope="stage2_smoke"` when any cap is set, otherwise `scope="canonical_v1"`.
+`RealCanonicalBackend.initialize_manifests()` uses its base config to distinguish smoke-selected caps from full canonical selection. MNLI records the sampled fixed membership; HANS records build/dev/evaluation full IDs, raw split membership, selected raw-to-qualified evaluation mapping, and versioned ordered content-integrity evidence; every OOD dataset records full and selected identities. The top-level manifest includes `schema_version="canonical_data_manifest_v4"` and `scope="stage2_smoke"` when any cap is set, otherwise `scope="canonical_v1"`. Stage 2 validation requires the complete frozen profile and exact official HANS anchors; it does not accept miniature manifests labelled as Stage 2.
 
 - [ ] **Step 6: Run manifest and regression tests**
 

@@ -108,10 +108,52 @@ the same train namespace. The prefix never enters the deterministic cap hash,
 so smoke membership remains the frozen raw-key membership. A separate
 exact-content identity over gold label, premise, hypothesis, heuristic, and
 subcase excludes `pairID` and rejects within-partition duplicates or
-cross-partition overlap. `canonical_data_manifest_v3` persists the ordered
-content hashes, ordered and joint ID/content checksums, declarations, and
-recomputed zero duplicate/overlap counts. Source qualification therefore
-resolves local-ID reuse without weakening the leakage gate.
+cross-partition overlap. `canonical_data_manifest_v4` persists three separate,
+cross-bound objects: raw-only `hans.split_integrity`, ordered and joint
+`hans.content_integrity`, and raw-to-qualified `hans.selection_integrity`.
+Every builder record's `canonical_pair_id` must equal its parallel qualified ID.
+The split object uses
+`source_local_id_sort_numpy_default_rng_per_stratum_v1`; its small-stratum
+members remain raw `exN`. Content uses `sha256_canonical_json_utf8_v1` and
+excludes pair ID. Selection uses
+`sha256_seed_nul_source_local_id_stratified_round_robin_v1`, ranking key
+`source_local_pair_id`, transform
+`hans_evaluation::<source_local_pair_id>`, seed 42, the three HANS strata, and
+an explicit cap/order. Source qualification therefore resolves local-ID reuse
+without weakening either leakage or membership gates.
+
+The v4 validator additionally pins read-only official semantic anchors derived
+twice from the cached official TSVs with
+`official_tsv_canonical_json_utf8_sha256_v1`. Complete anchors are:
+
+| Evidence | train/build | dev | evaluation |
+|---|---|---|---|
+| source-file SHA-256 | `49245bd5fdb0b185dcbfbf48f0f16513c62ad5bc9fad0b8800dc48d6818ee5cf` | — | `c55b62feef9913070e88f38938dc2492018c945ac81f70139346472494124e79` |
+| count | `24000` | `6000` | `30000` |
+| raw-ID checksum | `cf37089c0550410096e718e8c5a8f996650afe0afcef91c2660f27ce43560eab` | `53f63723dfe459bfbd1b1ffe045af5d61beb3181ba37a379dfa96f92e08c1ba8` | `495a55ae9bad6e464684b3b205ae6b591f5abb424dd5c0fdb98f2ad3db63be70` |
+| qualified-ID checksum | `cd8e7f745cc93703a71bd9c62b36647a8c3fe04596528f1b5a4be002ebe74bcc` | `f2d2fd8a0c43d8d1c449ab4ed990eedf7d3600afbdd38c0ac8ec0ccde07887ce` | `0a6d3beb1d2f182f2c7decd199bd7ca854baaf5fb1acf322297257d20bcf75a0` |
+| ordered-content checksum | `3eea3fea671f926bcc3975dd01595d70842e37ae3ede45b8324d37b2a6dd6de1` | `d949b61e6d75889de00d1266ee73633bde9181e23be110005cb106c4328aa8d7` | `2b9b28d55b07245e3040aa0bcbcd14cd4a9598e4b55202b759d7f515aeb1cbfa` |
+| ID/content joint checksum | `c74c88f8edcfd138b99b21571e45fc0520c460eba194edc75dfd7da20f5bde5c` | `48f62af7a35125b87195fa0c6590918bf472de9b5b1315e303d9e10fd2ac214b` | `24eea2e3cb75c2910de142154803e8bdd98fcba6f12c61293de997faccff43ef` |
+
+The exact split checksum is
+`f2d240a1709481a8c37c0721104697469383e9ad49ed22496f9265633c9f129a`.
+The train source count is 30000 and the official raw small-strata list is `[]`.
+The exact cap-384 raw, qualified, and mapping checksums are respectively
+`afa0aea6a159eb3b4f68077da8a665e1c277d47815d01398633af5cfe8e53b51`,
+`2dad8b0ee67b7c3cbc8a621826c64cd7cb87bf78965a93e58c4519f092bd07c0`,
+and `d755522b3f3e492d3543400f5fe07fd2ba354f62e89525f7170e3432cc178b96`.
+The full-selection raw, qualified, and mapping checksums are respectively
+`495a55ae9bad6e464684b3b205ae6b591f5abb424dd5c0fdb98f2ad3db63be70`,
+`0a6d3beb1d2f182f2c7decd199bd7ca854baaf5fb1acf322297257d20bcf75a0`,
+and `fe500cf664524e54dfe55702418b03d717e5a25468f673b36fad5cdf5f82f2d9`.
+
+For `scope="stage2_smoke"`, the manifest must have v4, seeds 42, exact source
+and split provenance, MNLI counts 100000/5000 with 96 selected each, HANS counts
+24000/6000/30000 with evaluation selection 384, and 128 selected for each of
+e-SNLI, ANLI, SNLI-hard, and WANLI. The root
+`manifest_identity_summary` must exactly equal the manifest-derived identity
+counts/checksums and split/content/selection summaries; a stale summary or a
+self-consistent rehashed substitute fails closed.
 
 The freeze bundle has a separate canonical-targeted data manifest. It records the complete frozen 100,000-row MNLI training membership, 5,000-row MNLI validation membership, full HANS build/dev/evaluation membership, and full stable or reconstructable identities for e-SNLI, ANLI, SNLI-hard, and WANLI. Smoke-subset checksums never replace these full canonical identities.
 

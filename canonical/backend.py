@@ -14,6 +14,8 @@ from canonical.access_audit import append_access_event
 from canonical.conditions import CanonicalCondition
 from canonical.data import (
     build_hans_content_integrity_manifest,
+    build_hans_selection_integrity,
+    hans_manifest_identity_summary,
     sample_dataset,
     select_hans_evaluation_records,
 )
@@ -158,6 +160,13 @@ class RealCanonicalBackend:
                 for name in ("build", "dev", "evaluation")
             },
         )
+        hans_entries["split_integrity"] = dict(hans["split_integrity"])
+        hans_entries["selection_integrity"] = build_hans_selection_integrity(
+            selected_evaluation_source,
+            hans_entries["evaluation"]["selected_ids"],
+            limit=self.base_config.hans_eval_size,
+            seed=self.base_config.data_seed,
+        )
         from data.dataloader import (
             load_anli_raw,
             load_esnli_raw,
@@ -189,8 +198,7 @@ class RealCanonicalBackend:
             split="evaluation",
             purpose="manifest_identity_only",
             event="manifest_identity_summary",
-            identity_counts={name: hans_entries[name]["full_count"] for name in ("build", "dev", "evaluation")},
-            identity_checksums={name: hans_entries[name]["full_ids_sha256"] for name in ("build", "dev", "evaluation")},
+            **hans_manifest_identity_summary(hans_entries),
         )
         smoke_caps = (
             self.base_config.hans_eval_size,
@@ -200,7 +208,7 @@ class RealCanonicalBackend:
             self.base_config.wanli_eval_size,
         )
         data_manifest = {
-            "schema_version": "canonical_data_manifest_v3",
+            "schema_version": "canonical_data_manifest_v4",
             "scope": "stage2_smoke" if any(cap is not None for cap in smoke_caps) else "canonical_v1",
             "data_seed": 42,
             "hans_split_seed": 42,

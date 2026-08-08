@@ -27,6 +27,8 @@
 
 更正后的契约是：原始 `exN` 只作为同一文件内的冻结 split/cap 排序键，以保持既定数据成员；全局 artifact 分别使用 `hans_train::exN` 与 `hans_evaluation::exN`。同时，`canonical_data_manifest_v3` 持久化不含 pair ID 的精确内容哈希及 ID/content 联合校验和，并要求分区内重复与分区间交集重算结果均为零。本勘误发生在任何成功 smoke 训练或 canonical 结果产生之前，不改变阶段 1 的 seed、80/20 比例、训练配置或模型行为；本报告顶部的 protocol SHA-256 仍是阶段 1 当时快照的历史记录。
 
+**Stage 2 预结果勘误续补（Round 3，2026-08-08）**：独立复核进一步确认 v3 的自洽 checksum 仍不足以防止“替换成员后全部重哈希”的伪 manifest，因此 v3 在任何成功 smoke/GPU 运行之前由 `canonical_data_manifest_v4` 取代。v4 额外持久化 raw-only `hans.split_integrity`、raw-to-qualified `hans.selection_integrity`，要求 builder record 的 `canonical_pair_id` 与平行 qualified ID 逐行相等，并将 split/content/joint/selection 与只读官方 TSV 独立推导的完整语义锚绑定。Stage 2 validator 同时要求精确的 smoke schema/scope/seeds/provenance/count/cap profile；root `manifest_identity_summary` 必须逐字段等于 manifest 派生的 identity、split、content、selection 摘要。small-stratum membership 明确保持原始 `exN`，不得写 qualified ID。本续补不声称阶段 1 已读取真实数据，也不改变历史 Stage 1 commit、模型配置或结果；它只纠正进入首次 smoke 前的身份审计契约。完整锚值与算法记录在冻结协议第 4.2.1 节。
+
 ## 2. 本阶段范围
 
 ### 已完成

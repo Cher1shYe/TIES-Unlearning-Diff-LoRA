@@ -1,4 +1,5 @@
 import json
+from hashlib import sha256
 import sys
 import tempfile
 import types
@@ -264,6 +265,32 @@ class RealCanonicalBackendContractTest(unittest.TestCase):
                         "gold_label": "non-entailment", "heuristic": "constituent",
                         "subcase": "evaluation", "sentence1": "evaluation premise", "sentence2": "evaluation hypothesis",
                     }],
+                    "split_integrity": {
+                        "schema_version": "hans_split_integrity_v1",
+                        "seed": 42,
+                        "split_algorithm": "source_local_id_sort_numpy_default_rng_per_stratum_v1",
+                        "checksum_algorithm": "sha256_canonical_json_utf8_v1",
+                        "build_count": 1,
+                        "dev_count": 1,
+                        "build_source_pair_ids": ["ex0"],
+                        "dev_source_pair_ids": ["ex1"],
+                        "small_strata": [],
+                        "split_checksum": sha256(
+                            json.dumps(
+                                {
+                                    "schema_version": "hans_split_v1",
+                                    "hans_split_seed": 42,
+                                    "build_pair_ids": ["ex0"],
+                                    "dev_pair_ids": ["ex1"],
+                                    "small_strata": [],
+                                },
+                                ensure_ascii=False,
+                                allow_nan=False,
+                                sort_keys=True,
+                                separators=(",", ":"),
+                            ).encode("utf-8")
+                        ).hexdigest(),
+                    },
                 }
 
             dataloader_stub.make_hans_split_manifest = fake_hans_manifest

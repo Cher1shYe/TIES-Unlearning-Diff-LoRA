@@ -10,6 +10,7 @@ from datasets import Dataset, Value, concatenate_datasets, load_dataset
 
 from configs.config import TrainConfig
 from canonical.data import (
+    build_hans_split_integrity,
     deterministic_cap_records,
     qualify_hans_pair_id,
     sample_dataset,
@@ -256,6 +257,7 @@ def make_hans_split_manifest(cfg: TrainConfig):
         evaluation_records,
     )
     manifest = split.manifest()
+    manifest["split_integrity"] = build_hans_split_integrity(split)
     manifest["evaluation_count"] = len(evaluation_ids)
     manifest["evaluation_pair_ids"] = evaluation_ids
     manifest["build_records"] = [dict(record) for record in split.build_records]

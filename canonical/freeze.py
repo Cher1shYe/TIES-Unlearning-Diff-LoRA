@@ -14,7 +14,7 @@ from datetime import datetime
 from hashlib import sha256
 
 from canonical.artifacts import collect_environment_metadata, sha256_file, write_json
-from canonical.data import validate_hans_manifest_identities
+from canonical.data import HANS_OFFICIAL_ANCHORS_V1, validate_hans_manifest_identities
 from canonical.source_package import _EXCLUSIONS_METADATA, _allowed_source, _clean_git_metadata, verify_source_package
 from canonical.stage2_validation import compare_a100_repeat
 
@@ -136,14 +136,14 @@ def _live_environment_probe() -> dict[str, Any]:
 
 
 def _strict_data_manifest(data: dict[str, Any]) -> None:
-    if set(data) != {"schema_version", "scope", "data_seed", "hans_split_seed", "mnli", "hans", "ood"} or data.get("schema_version") != "canonical_data_manifest_v3" or data.get("scope") != "canonical_v1":
+    if set(data) != {"schema_version", "scope", "data_seed", "hans_split_seed", "mnli", "hans", "ood"} or data.get("schema_version") != "canonical_data_manifest_v4" or data.get("scope") != "canonical_v1":
         raise ValueError("canonical data manifest schema/scope is invalid")
     if data.get("data_seed") != 42 or data.get("hans_split_seed") != 42:
         raise ValueError("canonical data manifest seeds must equal 42")
     groups = (("mnli", "train", "validation_matched"), ("hans", "build", "dev", "evaluation"), ("ood", "esnli", "anli", "snli_hard", "wanli"))
     for group, *entries in groups:
         mapping = data.get(group)
-        expected_names = set(entries) | ({"content_integrity"} if group == "hans" else set())
+        expected_names = set(entries) | ({"split_integrity", "content_integrity", "selection_integrity"} if group == "hans" else set())
         if not isinstance(mapping, dict) or set(mapping) != expected_names:
             raise ValueError(f"canonical data manifest lacks {group}")
         for name in entries:
@@ -172,7 +172,12 @@ def _strict_data_manifest(data: dict[str, Any]) -> None:
     hans_sets = [set(data["hans"][name]["full_ids"]) for name in ("build", "dev", "evaluation")]
     if any(hans_sets[left] & hans_sets[right] for left in range(3) for right in range(left + 1, 3)):
         raise ValueError("canonical HANS build/dev/evaluation IDs must be disjoint")
-    validate_hans_manifest_identities(data["hans"])
+    validate_hans_manifest_identities(
+        data["hans"],
+        expected_seed=42,
+        expected_selection_cap=None,
+        official_anchors=HANS_OFFICIAL_ANCHORS_V1,
+    )
 
 
 def _commands(root: Path, path: Path, *, mode: str, gpu: str) -> dict[str, Any]:

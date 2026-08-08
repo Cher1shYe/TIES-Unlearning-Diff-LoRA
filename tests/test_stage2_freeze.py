@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 import zipfile
+from hashlib import sha256
 from pathlib import Path
 from unittest.mock import patch
 
@@ -15,6 +16,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from canonical.artifacts import sha256_file, write_json
+from canonical.data import build_hans_selection_integrity
 from canonical.freeze import (
     _commands,
     _strict_data_manifest,
@@ -26,6 +28,68 @@ from canonical.freeze import (
 )
 from canonical.source_package import _allowed_source, _tracked_entries, build_source_package, verify_source_package
 from canonical.stage2_validation import compare_a100_repeat, validate_smoke_root
+from tests.test_stage2_validation import (
+    TEST_HANS_ANCHORS,
+    TEST_STAGE2_PROFILE,
+)
+
+
+def _digest(value):
+    return sha256(
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+_FREEZE_SPLIT_PAYLOAD = {
+    "schema_version": "hans_split_v1",
+    "hans_split_seed": 42,
+    "build_pair_ids": ["ex0"],
+    "dev_pair_ids": ["ex1"],
+    "small_strata": [],
+}
+TEST_FREEZE_HANS_ANCHORS = {
+    "schema_version": "hans_official_semantic_anchors_v1",
+    "split_checksum": _digest(_FREEZE_SPLIT_PAYLOAD),
+    "partitions": {
+        "build": {
+            "count": 1,
+            "source_pair_ids_sha256": _digest(["ex0"]),
+            "qualified_ids_sha256": _digest(["hans_train::ex0"]),
+            "content_sha256_ordered_checksum": _digest(["1" * 64]),
+            "source_id_content_joint_checksum": _digest([["hans_train::ex0", "1" * 64]]),
+        },
+        "dev": {
+            "count": 1,
+            "source_pair_ids_sha256": _digest(["ex1"]),
+            "qualified_ids_sha256": _digest(["hans_train::ex1"]),
+            "content_sha256_ordered_checksum": _digest(["2" * 64]),
+            "source_id_content_joint_checksum": _digest([["hans_train::ex1", "2" * 64]]),
+        },
+        "evaluation": {
+            "count": 2,
+            "source_pair_ids_sha256": _digest(["ex0", "ex1"]),
+            "qualified_ids_sha256": _digest(["hans_evaluation::ex0", "hans_evaluation::ex1"]),
+            "content_sha256_ordered_checksum": _digest(["3" * 64, "4" * 64]),
+            "source_id_content_joint_checksum": _digest(
+                [["hans_evaluation::ex0", "3" * 64], ["hans_evaluation::ex1", "4" * 64]]
+            ),
+        },
+    },
+    "selection_full": {
+        "count": 2,
+        "selected_source_pair_ids_sha256": _digest(["ex0", "ex1"]),
+        "selected_artifact_ids_sha256": _digest(["hans_evaluation::ex0", "hans_evaluation::ex1"]),
+        "source_to_artifact_mapping_sha256": _digest(
+            [["ex0", "hans_evaluation::ex0"], ["ex1", "hans_evaluation::ex1"]]
+        ),
+    },
+}
 
 
 class CanonicalManifestBackend:
@@ -58,8 +122,15 @@ class CanonicalManifestBackend:
             source, split, preferred, strata = provenance[(group, name)]
             selected_limit = count if group == "mnli" else None
             return {"source": source, "split": split, "id_strategy": "preferred_field_or_content_sha256", "preferred_id_fields": preferred, "strata_fields": strata, "selection_seed": 42, "selected_limit": selected_limit, "full_count": count, "selected_count": count, "full_ids": values, "selected_ids": values, "full_ids_sha256": digest, "selected_ids_sha256": digest}
-        hans_entries = {name: entry("hans", name, 1) for name in ("build", "dev", "evaluation")}
-        content_hashes = {"build": ["1" * 64], "dev": ["2" * 64], "evaluation": ["3" * 64]}
+        hans_entries = {
+            name: entry("hans", name, 2 if name == "evaluation" else 1)
+            for name in ("build", "dev", "evaluation")
+        }
+        content_hashes = {
+            "build": ["1" * 64],
+            "dev": ["2" * 64],
+            "evaluation": ["3" * 64, "4" * 64],
+        }
         partitions = {}
         for name, hashes in content_hashes.items():
             ordered = json.dumps(hashes, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -80,10 +151,31 @@ class CanonicalManifestBackend:
             "partitions": partitions,
             "overlap_counts": {"build_dev": 0, "build_evaluation": 0, "dev_evaluation": 0},
         }
+        hans_entries["split_integrity"] = {
+            "schema_version": "hans_split_integrity_v1",
+            "seed": 42,
+            "split_algorithm": "source_local_id_sort_numpy_default_rng_per_stratum_v1",
+            "checksum_algorithm": "sha256_canonical_json_utf8_v1",
+            "build_count": 1,
+            "dev_count": 1,
+            "build_source_pair_ids": ["ex0"],
+            "dev_source_pair_ids": ["ex1"],
+            "small_strata": [],
+            "split_checksum": _digest(_FREEZE_SPLIT_PAYLOAD),
+        }
+        hans_entries["selection_integrity"] = build_hans_selection_integrity(
+            [
+                {"pairID": f"ex{index}", "canonical_pair_id": f"hans_evaluation::ex{index}"}
+                for index in range(2)
+            ],
+            hans_entries["evaluation"]["selected_ids"],
+            limit=None,
+            seed=42,
+        )
         write_json(
             manifests / "data_manifest.json",
             {
-                "schema_version": "canonical_data_manifest_v3",
+                "schema_version": "canonical_data_manifest_v4",
                 "scope": "canonical_v1",
                 "data_seed": 42,
                 "hans_split_seed": 42,
@@ -100,6 +192,16 @@ class ZeroArgumentCanonicalManifestBackend(CanonicalManifestBackend):
 
 
 class Stage2FreezeTest(unittest.TestCase):
+    def setUp(self):
+        self._contract_patches = (
+            patch("canonical.freeze.HANS_OFFICIAL_ANCHORS_V1", TEST_FREEZE_HANS_ANCHORS),
+            patch("canonical.stage2_validation.HANS_OFFICIAL_ANCHORS_V1", TEST_HANS_ANCHORS),
+            patch("canonical.stage2_validation._STAGE2_DATA_PROFILE", TEST_STAGE2_PROFILE),
+        )
+        for contract_patch in self._contract_patches:
+            contract_patch.start()
+            self.addCleanup(contract_patch.stop)
+
     def _git(self, repo, *args):
         return subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True)
 
@@ -530,10 +632,11 @@ class Stage2FreezeTest(unittest.TestCase):
                 with self.subTest(invalid_id=invalid_id):
                     data = json.loads(data_path.read_text(encoding="utf-8"))
                     evaluation = data["hans"]["evaluation"]
-                    evaluation["full_ids"] = evaluation["selected_ids"] = [invalid_id]
+                    invalid_ids = [invalid_id, evaluation["full_ids"][1]]
+                    evaluation["full_ids"] = evaluation["selected_ids"] = invalid_ids
                     digest = hashlib.sha256(
                         json.dumps(
-                            [invalid_id],
+                            invalid_ids,
                             ensure_ascii=False,
                             allow_nan=False,
                             sort_keys=True,
@@ -678,11 +781,12 @@ class Stage2FreezeTest(unittest.TestCase):
                 with self.subTest(invalid_id=invalid_id):
                     data = json.loads(original_data)
                     entry = data["hans"]["evaluation"]
-                    entry["full_ids"] = entry["selected_ids"] = [invalid_id]
+                    invalid_ids = [invalid_id, entry["full_ids"][1]]
+                    entry["full_ids"] = entry["selected_ids"] = invalid_ids
                     import hashlib
                     digest = hashlib.sha256(
                         json.dumps(
-                            [invalid_id],
+                            invalid_ids,
                             ensure_ascii=False,
                             allow_nan=False,
                             sort_keys=True,
@@ -703,6 +807,82 @@ class Stage2FreezeTest(unittest.TestCase):
             write_json(frozen_expectations, values)
             _write_inventory(freeze)
             with self.assertRaisesRegex(ValueError, "expectations|provenance"):
+                verify_freeze_bundle(freeze)
+
+    def test_verify_freeze_rejects_rehashed_hans_anchor_substitution(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, protocol, archive, expectations = self._execution_inputs(tmp)
+            smoke = self._a100_smoke(tmp)
+            freeze = Path(tmp) / "freeze-anchor"
+            with patch("canonical.freeze.compare_a100_repeat", self._validated_a100):
+                build_freeze_bundle(
+                    protocol, smoke, freeze, repo,
+                    source_archive_path=archive,
+                    expectations_path=expectations,
+                    commands_path=smoke / "commands.json",
+                    backend_factory=CanonicalManifestBackend,
+                    environment_probe=self._environment_probe,
+                )
+            data_path = freeze / "manifests" / "data_manifest.json"
+            original = data_path.read_bytes()
+
+            data = json.loads(original)
+            hans = data["hans"]
+            for key in (
+                "full_ids", "selected_ids", "full_ids_sha256", "selected_ids_sha256"
+            ):
+                hans["build"][key], hans["dev"][key] = hans["dev"][key], hans["build"][key]
+            hans["content_integrity"]["partitions"]["build"], hans["content_integrity"]["partitions"]["dev"] = (
+                hans["content_integrity"]["partitions"]["dev"],
+                hans["content_integrity"]["partitions"]["build"],
+            )
+            split = hans["split_integrity"]
+            split["build_source_pair_ids"], split["dev_source_pair_ids"] = (
+                split["dev_source_pair_ids"], split["build_source_pair_ids"]
+            )
+            split["split_checksum"] = _digest(
+                {
+                    "schema_version": "hans_split_v1",
+                    "hans_split_seed": 42,
+                    "build_pair_ids": split["build_source_pair_ids"],
+                    "dev_pair_ids": split["dev_source_pair_ids"],
+                    "small_strata": [],
+                }
+            )
+            write_json(data_path, data)
+            _write_inventory(freeze)
+            with self.assertRaisesRegex(ValueError, "official.*split.*anchor"):
+                verify_freeze_bundle(freeze)
+
+            data_path.write_bytes(original)
+            data = json.loads(original)
+            entry = data["hans"]["content_integrity"]["partitions"]["evaluation"]
+            entry["content_sha256"] = list(reversed(entry["content_sha256"]))
+            entry["content_sha256_ordered_checksum"] = _digest(entry["content_sha256"])
+            entry["source_id_content_joint_checksum"] = _digest(
+                list(zip(data["hans"]["evaluation"]["full_ids"], entry["content_sha256"]))
+            )
+            write_json(data_path, data)
+            _write_inventory(freeze)
+            with self.assertRaisesRegex(ValueError, "official.*content.*anchor"):
+                verify_freeze_bundle(freeze)
+
+            data_path.write_bytes(original)
+            data = json.loads(original)
+            selection = data["hans"]["selection_integrity"]
+            selection["cap"] = 2
+            selection["selected_order"] = "ranked_cap_order"
+            payload = {
+                key: value
+                for key, value in selection.items()
+                if key != "integrity_checksum"
+            }
+            selection["integrity_checksum"] = _digest(
+                [[key, payload[key]] for key in sorted(payload)]
+            )
+            write_json(data_path, data)
+            _write_inventory(freeze)
+            with self.assertRaisesRegex(ValueError, "HANS selection"):
                 verify_freeze_bundle(freeze)
 
     def test_freeze_refuses_unvalidated_a100_evidence_canonical_paths_and_nonempty_outputs(self):

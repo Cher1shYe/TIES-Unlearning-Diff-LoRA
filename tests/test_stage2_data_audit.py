@@ -256,7 +256,7 @@ class DataIdentityManifestTest(unittest.TestCase):
         ):
             self.assertTrue(callable(getattr(dataloader, name)))
 
-    def test_backend_writes_v3_groups_without_network_when_loaders_are_injected(self):
+    def test_backend_writes_v4_hans_integrities_and_bound_audit_without_network(self):
         class FixtureRows:
             def __init__(self, rows):
                 self.rows = [dict(row) for row in rows]
@@ -329,6 +329,33 @@ class DataIdentityManifestTest(unittest.TestCase):
                 )
             ],
         }
+        split_payload = {
+            "schema_version": "hans_split_v1",
+            "hans_split_seed": 42,
+            "build_pair_ids": ["ex0"],
+            "dev_pair_ids": ["ex1"],
+            "small_strata": [],
+        }
+        hans_manifest["split_integrity"] = {
+            "schema_version": "hans_split_integrity_v1",
+            "seed": 42,
+            "split_algorithm": "source_local_id_sort_numpy_default_rng_per_stratum_v1",
+            "checksum_algorithm": "sha256_canonical_json_utf8_v1",
+            "build_count": 1,
+            "dev_count": 1,
+            "build_source_pair_ids": ["ex0"],
+            "dev_source_pair_ids": ["ex1"],
+            "small_strata": [],
+            "split_checksum": sha256(
+                json.dumps(
+                    split_payload,
+                    ensure_ascii=False,
+                    allow_nan=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest(),
+        }
         raw_ood = FixtureRows(MANIFEST_ROWS)
         fake_datasets = types.ModuleType("datasets")
         fake_datasets.load_dataset = lambda *_args, **_kwargs: mnli
@@ -358,11 +385,14 @@ class DataIdentityManifestTest(unittest.TestCase):
             backend.initialize_manifests(output, Path(tmp) / "protocol.md")
 
             manifest = json.loads((output / "manifests" / "data_manifest.json").read_text(encoding="utf-8"))
-            self.assertEqual("canonical_data_manifest_v3", manifest["schema_version"])
+            self.assertEqual("canonical_data_manifest_v4", manifest["schema_version"])
             self.assertEqual("stage2_smoke", manifest["scope"])
             self.assertEqual({"train", "validation_matched"}, set(manifest["mnli"]))
             self.assertEqual(
-                {"build", "dev", "evaluation", "content_integrity"},
+                {
+                    "build", "dev", "evaluation", "split_integrity",
+                    "content_integrity", "selection_integrity",
+                },
                 set(manifest["hans"]),
             )
             self.assertEqual({"esnli", "anli", "snli_hard", "wanli"}, set(manifest["ood"]))
@@ -383,7 +413,24 @@ class DataIdentityManifestTest(unittest.TestCase):
                 "hans_content_integrity_v1",
                 manifest["hans"]["content_integrity"]["schema_version"],
             )
-            self.assertEqual("manifest_identity_only", read_jsonl(output / "manifests" / "data_access.jsonl")[0]["purpose"])
+            self.assertEqual(
+                "hans_selection_integrity_v1",
+                manifest["hans"]["selection_integrity"]["schema_version"],
+            )
+            events = read_jsonl(output / "manifests" / "data_access.jsonl")
+            self.assertEqual("manifest_identity_only", events[0]["purpose"])
+            self.assertEqual(
+                {
+                    "identity_counts", "identity_checksums", "split_integrity_summary",
+                    "content_integrity_summary", "selection_integrity_summary",
+                },
+                set(events[1])
+                - {"sequence", "timestamp", "event", "dataset", "split", "purpose"},
+            )
+            self.assertEqual(
+                manifest["hans"]["split_integrity"]["split_checksum"],
+                events[1]["split_integrity_summary"]["split_checksum"],
+            )
 
 
 class StructuredDataAccessAuditTest(unittest.TestCase):

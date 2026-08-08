@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+import canonical.data as canonical_data
 from canonical.data import (
     build_hans_content_integrity_manifest,
     dataset_row_ids,
@@ -57,6 +58,22 @@ def hans_record(pair_id, label, heuristic, subcase):
 
 
 class CanonicalDataContractTest(unittest.TestCase):
+    def test_official_hans_semantic_anchor_values_are_source_controlled(self):
+        anchors = canonical_data.HANS_OFFICIAL_ANCHORS_V1
+        self.assertEqual("hans_official_semantic_anchors_v1", anchors["schema_version"])
+        self.assertEqual(
+            "f2d240a1709481a8c37c0721104697469383e9ad49ed22496f9265633c9f129a",
+            anchors["split_checksum"],
+        )
+        self.assertEqual(
+            "afa0aea6a159eb3b4f68077da8a665e1c277d47815d01398633af5cfe8e53b51",
+            anchors["selection_384"]["selected_source_pair_ids_sha256"],
+        )
+        self.assertEqual(
+            "d755522b3f3e492d3543400f5fe07fd2ba354f62e89525f7170e3432cc178b96",
+            anchors["selection_384"]["source_to_artifact_mapping_sha256"],
+        )
+
     def test_hans_pair_id_is_qualified_by_physical_source_partition(self):
         self.assertEqual("hans_train::ex0", qualify_hans_pair_id("ex0", "train"))
         self.assertEqual(
@@ -141,15 +158,74 @@ class CanonicalDataContractTest(unittest.TestCase):
         self.assertEqual(expected_joint, build_entry["source_id_content_joint_checksum"])
 
         changed_pair_ids = {
-            name: [dict(row, pairID="ex999", canonical_pair_id="hans_train::ex999") for row in rows]
+            name: [dict(row, pairID="ex999") for row in rows]
             for name, rows in records.items()
         }
-        changed_pair_ids["evaluation"][0]["canonical_pair_id"] = "hans_evaluation::ex999"
         changed_evidence = build_hans_content_integrity_manifest(changed_pair_ids, ids)
         self.assertEqual(
             evidence["partitions"]["build"]["content_sha256"],
             changed_evidence["partitions"]["build"]["content_sha256"],
         )
+
+    def test_hans_content_manifest_rejects_record_identity_not_equal_to_parallel_id(self):
+        build = hans_record("ex0", "entailment", "lexical_overlap", "build-case")
+        build["canonical_pair_id"] = "hans_train::ex0"
+        dev = hans_record("ex1", "non-entailment", "subsequence", "dev-case")
+        dev["canonical_pair_id"] = "hans_train::ex1"
+        evaluation = hans_record("ex0", "non-entailment", "constituent", "eval-case")
+        evaluation["canonical_pair_id"] = "hans_evaluation::ex0"
+
+        with self.assertRaisesRegex(ValueError, "canonical_pair_id.*parallel"):
+            build_hans_content_integrity_manifest(
+                {"build": [build], "dev": [dev], "evaluation": [evaluation]},
+                {
+                    "build": ["hans_train::ex99"],
+                    "dev": ["hans_train::ex1"],
+                    "evaluation": ["hans_evaluation::ex0"],
+                },
+            )
+
+    def test_split_integrity_uses_only_raw_ids_including_small_strata(self):
+        records = []
+        for index in range(4):
+            record = hans_record(
+                f"ex{index}", "entailment", "constituent", "small-case"
+            )
+            record["canonical_pair_id"] = f"hans_train::ex{index}"
+            records.append(record)
+
+        split = split_hans_records(records, seed=42)
+        self.assertEqual(
+            [f"ex{index}" for index in range(4)],
+            split.small_strata[0]["build_pair_ids"],
+        )
+        integrity = canonical_data.build_hans_split_integrity(split)
+
+        self.assertEqual([f"ex{index}" for index in range(4)], integrity["build_source_pair_ids"])
+        self.assertEqual([], integrity["dev_source_pair_ids"])
+        self.assertEqual(
+            [f"ex{index}" for index in range(4)],
+            integrity["small_strata"][0]["build_source_pair_ids"],
+        )
+        self.assertNotIn("hans_train::", json.dumps(integrity["small_strata"]))
+
+    def test_selection_integrity_binds_raw_ranking_to_parallel_qualified_ids(self):
+        selected = [
+            {"pairID": "ex9", "canonical_pair_id": "hans_evaluation::ex9"},
+            {"pairID": "ex2", "canonical_pair_id": "hans_evaluation::ex2"},
+        ]
+
+        integrity = canonical_data.build_hans_selection_integrity(
+            selected,
+            ["hans_evaluation::ex9", "hans_evaluation::ex2"],
+            limit=2,
+            seed=42,
+        )
+
+        self.assertEqual("source_local_pair_id", integrity["ranking_key"])
+        self.assertEqual(["ex9", "ex2"], integrity["selected_source_pair_ids"])
+        self.assertEqual(2, integrity["cap"])
+        self.assertEqual(2, integrity["selected_count"])
 
     def test_training_seed_cannot_change_fixed_data_ids(self):
         source = FakeDataset({"idx": index} for index in range(20))
