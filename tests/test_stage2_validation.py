@@ -538,6 +538,34 @@ def _create_smoke_root(
 
 
 class Stage2ValidationTest(unittest.TestCase):
+    def test_v4_manifest_without_record_computed_source_integrity_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = _create_smoke_root(Path(tmp) / "v4-source-bypass")
+
+            with self.assertRaisesRegex(ValueError, "v5|source.integrity|data manifest"):
+                validate_smoke_root(
+                    root,
+                    expected_conditions=PRIMARY_CONDITIONS,
+                    canonical_dir=Path(tmp) / "canonical_v1",
+                )
+
+    def test_manifest_identity_audit_requires_source_integrity_summary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = _create_smoke_root(Path(tmp) / "missing-source-summary")
+            audit = root / "manifests" / "data_access.jsonl"
+            events = [
+                json.loads(line)
+                for line in audit.read_text(encoding="utf-8").splitlines()
+            ]
+            expected_summary = hans_manifest_identity_summary(TEST_HANS_MANIFEST)
+
+            with self.assertRaisesRegex(ValueError, "source.integrity|manifest identity"):
+                _validate_manifest_identity_audit(
+                    events,
+                    source=audit,
+                    expected_summary=expected_summary,
+                )
+
     def test_two_id_root_labelled_stage2_smoke_profile_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = _create_smoke_root(Path(tmp) / "two-id-profile")

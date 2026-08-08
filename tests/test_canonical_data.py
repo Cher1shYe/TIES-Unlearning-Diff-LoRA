@@ -57,10 +57,149 @@ def hans_record(pair_id, label, heuristic, subcase):
     }
 
 
+def official_hans_source_record(pair_id, physical_source):
+    return {
+        "gold_label": "entailment",
+        "sentence1_binary_parse": f"binary-premise-{pair_id}",
+        "sentence2_binary_parse": f"binary-hypothesis-{pair_id}",
+        "sentence1_parse": f"parse-premise-{pair_id}",
+        "sentence2_parse": f"parse-hypothesis-{pair_id}",
+        "sentence1": f"premise-{pair_id}",
+        "sentence2": f"hypothesis-{pair_id}",
+        "pairID": pair_id,
+        "heuristic": "lexical_overlap",
+        "subcase": "case",
+        "template": "temp1",
+        "canonical_pair_id": f"hans_{physical_source}::{pair_id}",
+    }
+
+
 class CanonicalDataContractTest(unittest.TestCase):
+    def test_hans_source_integrity_binds_all_11_fields_in_numeric_raw_id_order(self):
+        builder = getattr(canonical_data, "build_hans_source_integrity_manifest", None)
+        self.assertIsNotNone(builder, "v5 source-integrity builder is missing")
+
+        evidence = builder(
+            [
+                official_hans_source_record("ex10", "train"),
+                official_hans_source_record("ex2", "train"),
+            ],
+            [official_hans_source_record("ex0", "evaluation")],
+        )
+
+        self.assertEqual("hans_source_integrity_v1", evidence["schema_version"])
+        self.assertEqual(
+            [
+                "gold_label", "sentence1_binary_parse", "sentence2_binary_parse",
+                "sentence1_parse", "sentence2_parse", "sentence1", "sentence2",
+                "pairID", "heuristic", "subcase", "template",
+            ],
+            evidence["fields"],
+        )
+        self.assertEqual(
+            "numeric_pair_id_then_raw_pair_id_v1",
+            evidence["ordering"],
+        )
+        self.assertEqual(
+            {
+                "count": 2,
+                "records_sha256": "8f94dda7d6d6c9a17fd111a524ded2f4e8d5f238817f102016718bcfc300fc24",
+            },
+            evidence["sources"]["train"],
+        )
+        self.assertEqual(
+            {
+                "count": 1,
+                "records_sha256": "1951354d02be2dc890bf247f37ab27c34f6d377649efb382ec5e1b4caec1dee1",
+            },
+            evidence["sources"]["evaluation"],
+        )
+
+    def test_hans_source_integrity_catches_template_tamper_ignored_by_v4_content(self):
+        builder = getattr(canonical_data, "build_hans_source_integrity_manifest", None)
+        build = official_hans_source_record("ex2", "train")
+        dev = official_hans_source_record("ex10", "train")
+        evaluation = official_hans_source_record("ex0", "evaluation")
+        records = {"build": [build], "dev": [dev], "evaluation": [evaluation]}
+        ids = {
+            "build": ["hans_train::ex2"],
+            "dev": ["hans_train::ex10"],
+            "evaluation": ["hans_evaluation::ex0"],
+        }
+        v4_content = build_hans_content_integrity_manifest(records, ids)
+        changed_evaluation = dict(evaluation, template="temp999")
+        rebuilt_v4_content = build_hans_content_integrity_manifest(
+            {**records, "evaluation": [changed_evaluation]}, ids
+        )
+        self.assertEqual(v4_content, rebuilt_v4_content)
+        self.assertIsNotNone(builder, "v5 source-integrity builder is missing")
+        original = builder([build, dev], [evaluation])
+        changed = builder([build, dev], [changed_evaluation])
+        self.assertNotEqual(
+            original["sources"]["evaluation"]["records_sha256"],
+            changed["sources"]["evaluation"]["records_sha256"],
+        )
+        self.assertEqual(
+            "8c2d895542be91629be85114588b8c20edab298de5970ed2eb2e9b552a48250d",
+            changed["sources"]["evaluation"]["records_sha256"],
+        )
+
+    def test_hans_source_integrity_rejects_missing_and_extra_official_fields(self):
+        builder = getattr(canonical_data, "build_hans_source_integrity_manifest", None)
+        self.assertIsNotNone(builder, "v5 source-integrity builder is missing")
+        valid_train = official_hans_source_record("ex0", "train")
+        valid_evaluation = official_hans_source_record("ex0", "evaluation")
+        missing = dict(valid_train)
+        del missing["template"]
+        extra = dict(valid_train, unexpected="not-official")
+
+        for name, invalid in (("missing", missing), ("extra", extra)):
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(ValueError, "exactly.*11|official.*fields"):
+                    builder([invalid], [valid_evaluation])
+
+    def test_hans_source_integrity_never_accepts_a_caller_supplied_digest(self):
+        builder = getattr(canonical_data, "build_hans_source_integrity_manifest", None)
+        self.assertIsNotNone(builder, "v5 source-integrity builder is missing")
+        with self.assertRaises(TypeError):
+            builder(
+                [official_hans_source_record("ex0", "train")],
+                [official_hans_source_record("ex0", "evaluation")],
+                source_digests={"train": "0" * 64, "evaluation": "0" * 64},
+            )
+
+    def test_hans_source_integrity_validator_pins_record_computed_digests(self):
+        builder = canonical_data.build_hans_source_integrity_manifest
+        validator = getattr(canonical_data, "validate_hans_source_integrity_manifest", None)
+        self.assertIsNotNone(validator, "v5 source-integrity validator is missing")
+        evidence = builder(
+            [official_hans_source_record("ex0", "train")],
+            [official_hans_source_record("ex0", "evaluation")],
+        )
+        anchors = {
+            "schema_version": "hans_official_semantic_anchors_v2",
+            "source_integrity": evidence["sources"],
+        }
+        validator(evidence, anchors)
+
+        changed = builder(
+            [official_hans_source_record("ex0", "train")],
+            [dict(official_hans_source_record("ex0", "evaluation"), template="changed")],
+        )
+        with self.assertRaisesRegex(ValueError, "official.*source|source.*anchor"):
+            validator(changed, anchors)
+
     def test_official_hans_semantic_anchor_values_are_source_controlled(self):
-        anchors = canonical_data.HANS_OFFICIAL_ANCHORS_V1
-        self.assertEqual("hans_official_semantic_anchors_v1", anchors["schema_version"])
+        anchors = canonical_data.HANS_OFFICIAL_ANCHORS_V2
+        self.assertEqual("hans_official_semantic_anchors_v2", anchors["schema_version"])
+        self.assertEqual(
+            "841ffee28e0310f1f95d692a534f362a8a171a69d7f659ec3ed07a4205840cf5",
+            anchors["source_integrity"]["train"]["records_sha256"],
+        )
+        self.assertEqual(
+            "5d170c471cde96e61c24d640cb50652bf7c594c4800e40d7ebf8133ec7d5df6b",
+            anchors["source_integrity"]["evaluation"]["records_sha256"],
+        )
         self.assertEqual(
             "f2d240a1709481a8c37c0721104697469383e9ad49ed22496f9265633c9f129a",
             anchors["split_checksum"],

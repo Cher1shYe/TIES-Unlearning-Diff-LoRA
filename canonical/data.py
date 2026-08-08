@@ -21,12 +21,37 @@ _HANS_SPLIT_ALGORITHM = "source_local_id_sort_numpy_default_rng_per_stratum_v1"
 _HANS_SELECTION_ALGORITHM = "sha256_seed_nul_source_local_id_stratified_round_robin_v1"
 _HANS_ARTIFACT_TRANSFORM = "hans_evaluation::<source_local_pair_id>"
 
-HANS_OFFICIAL_ANCHORS_V1 = {
-    "schema_version": "hans_official_semantic_anchors_v1",
-    "derivation_algorithm": "official_tsv_canonical_json_utf8_sha256_v1",
-    "source_file_sha256": {
+_HANS_SOURCE_FIELDS = (
+    "gold_label",
+    "sentence1_binary_parse",
+    "sentence2_binary_parse",
+    "sentence1_parse",
+    "sentence2_parse",
+    "sentence1",
+    "sentence2",
+    "pairID",
+    "heuristic",
+    "subcase",
+    "template",
+)
+_HANS_SOURCE_ORDERING = "numeric_pair_id_then_raw_pair_id_v1"
+
+HANS_OFFICIAL_ANCHORS_V2 = {
+    "schema_version": "hans_official_semantic_anchors_v2",
+    "derivation_algorithm": "official_tsv_exact_11_fields_numeric_pair_id_canonical_json_utf8_sha256_v1",
+    "informational_raw_file_sha256": {
         "train": "49245bd5fdb0b185dcbfbf48f0f16513c62ad5bc9fad0b8800dc48d6818ee5cf",
         "evaluation": "c55b62feef9913070e88f38938dc2492018c945ac81f70139346472494124e79",
+    },
+    "source_integrity": {
+        "train": {
+            "count": 30000,
+            "records_sha256": "841ffee28e0310f1f95d692a534f362a8a171a69d7f659ec3ed07a4205840cf5",
+        },
+        "evaluation": {
+            "count": 30000,
+            "records_sha256": "5d170c471cde96e61c24d640cb50652bf7c594c4800e40d7ebf8133ec7d5df6b",
+        },
     },
     "split_checksum": "f2d240a1709481a8c37c0721104697469383e9ad49ed22496f9265633c9f129a",
     "partitions": {
@@ -244,6 +269,63 @@ def _ordered_checksum(values: Sequence[Any]) -> str:
     return sha256(_canonical_bytes(list(values))).hexdigest()
 
 
+def build_hans_source_integrity_manifest(
+    train_records: Sequence[Mapping[str, Any]],
+    evaluation_records: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Hash every official parsed HANS field in canonical raw-ID order."""
+    sources: dict[str, dict[str, Any]] = {}
+    expected_fields = set(_HANS_SOURCE_FIELDS)
+    for physical_source, source_records in (
+        ("train", train_records),
+        ("evaluation", evaluation_records),
+    ):
+        canonical_records = []
+        seen_pair_ids: set[str] = set()
+        for position, source_record in enumerate(source_records):
+            record = dict(source_record)
+            record_keys = set(record)
+            if record_keys not in (
+                expected_fields,
+                {*expected_fields, "canonical_pair_id"},
+            ):
+                raise ValueError(
+                    "HANS source integrity records must contain exactly the 11 official fields plus only the derived canonical_pair_id"
+                )
+            if not all(isinstance(record[field], str) for field in _HANS_SOURCE_FIELDS):
+                raise ValueError("HANS source integrity official fields must be parsed strings")
+            pair_id = record["pairID"]
+            qualified_id = qualify_hans_pair_id(pair_id, physical_source)
+            if "canonical_pair_id" in record and record["canonical_pair_id"] != qualified_id:
+                raise ValueError(
+                    f"HANS source integrity {physical_source} record {position} has an invalid derived canonical_pair_id"
+                )
+            if pair_id in seen_pair_ids:
+                raise ValueError(
+                    f"HANS source integrity {physical_source} has duplicate source-local pairID: {pair_id}"
+                )
+            seen_pair_ids.add(pair_id)
+            canonical_records.append(
+                {field: record[field] for field in _HANS_SOURCE_FIELDS}
+            )
+        if not canonical_records:
+            raise ValueError(f"HANS source integrity {physical_source} records are empty")
+        canonical_records.sort(
+            key=lambda record: (int(record["pairID"][2:]), record["pairID"])
+        )
+        sources[physical_source] = {
+            "count": len(canonical_records),
+            "records_sha256": _ordered_checksum(canonical_records),
+        }
+    return {
+        "schema_version": "hans_source_integrity_v1",
+        "algorithm": _HANS_CONTENT_ALGORITHM,
+        "fields": list(_HANS_SOURCE_FIELDS),
+        "ordering": _HANS_SOURCE_ORDERING,
+        "sources": sources,
+    }
+
+
 def build_hans_content_integrity_manifest(
     records_by_partition: Mapping[str, Sequence[Mapping[str, Any]]],
     ids_by_partition: Mapping[str, Sequence[str]],
@@ -326,6 +408,46 @@ def validate_hans_content_integrity(
                 label = f"{partitions[left][0].removeprefix('HANS ').lower()}/{partitions[right][0].removeprefix('HANS ').lower()}"
                 preview = ", ".join(sorted(overlap)[:5])
                 raise ValueError(f"HANS content {label} overlap detected: {preview}")
+
+
+def validate_hans_source_integrity_manifest(
+    integrity: Any,
+    official_anchors: Mapping[str, Any] | None = None,
+) -> None:
+    """Validate parsed-record evidence and optionally pin official source anchors."""
+    if (
+        not isinstance(integrity, Mapping)
+        or set(integrity) != {
+            "schema_version", "algorithm", "fields", "ordering", "sources"
+        }
+        or integrity.get("schema_version") != "hans_source_integrity_v1"
+        or integrity.get("algorithm") != _HANS_CONTENT_ALGORITHM
+        or integrity.get("fields") != list(_HANS_SOURCE_FIELDS)
+        or integrity.get("ordering") != _HANS_SOURCE_ORDERING
+    ):
+        raise ValueError("HANS source integrity declaration is invalid")
+    sources = integrity.get("sources")
+    if not isinstance(sources, Mapping) or set(sources) != {"train", "evaluation"}:
+        raise ValueError("HANS source integrity physical sources are invalid")
+    for name in ("train", "evaluation"):
+        source = sources[name]
+        if (
+            not isinstance(source, Mapping)
+            or set(source) != {"count", "records_sha256"}
+            or not isinstance(source.get("count"), int)
+            or isinstance(source.get("count"), bool)
+            or source.get("count", 0) <= 0
+            or not isinstance(source.get("records_sha256"), str)
+            or re.fullmatch(r"[0-9a-f]{64}", source["records_sha256"]) is None
+        ):
+            raise ValueError(f"HANS source integrity {name} evidence is invalid")
+    if official_anchors is not None:
+        if (
+            official_anchors.get("schema_version")
+            != "hans_official_semantic_anchors_v2"
+            or official_anchors.get("source_integrity") != sources
+        ):
+            raise ValueError("official HANS source integrity anchor mismatch")
 
 
 def validate_hans_manifest_identities(
