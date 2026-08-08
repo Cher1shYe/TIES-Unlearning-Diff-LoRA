@@ -1,4 +1,5 @@
 import json
+from hashlib import sha256
 import subprocess
 import sys
 import tempfile
@@ -28,7 +29,7 @@ HASH_B = "b" * 64
 def _predictions(method, checkpoint_hash):
     return [
         {
-            "pair_id": f"{method}-entailment",
+            "pair_id": "hans_evaluation::ex0",
             "gold_label": "entailment",
             "predicted_label": "entailment",
             "entailment_probability": 0.9,
@@ -39,7 +40,7 @@ def _predictions(method, checkpoint_hash):
             "checkpoint_hash": checkpoint_hash,
         },
         {
-            "pair_id": f"{method}-non-entailment",
+            "pair_id": "hans_evaluation::ex1",
             "gold_label": "non-entailment",
             "predicted_label": "non-entailment",
             "entailment_probability": 0.1,
@@ -50,6 +51,27 @@ def _predictions(method, checkpoint_hash):
             "checkpoint_hash": checkpoint_hash,
         },
     ]
+
+
+def _hans_identity_entry(ids):
+    values = list(ids)
+    digest = sha256(
+        json.dumps(
+            values,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    return {
+        "full_count": len(values),
+        "selected_count": len(values),
+        "full_ids": values,
+        "selected_ids": values,
+        "full_ids_sha256": digest,
+        "selected_ids_sha256": digest,
+    }
 
 
 def _write_success_status(directory, relative_outputs):
@@ -119,7 +141,18 @@ def _create_smoke_root(
     manifests.mkdir(parents=True)
     write_json(
         manifests / "data_manifest.json",
-        {"schema_version": "data_manifest_v1", "data_seed": 42, "hans_split_seed": 42},
+        {
+            "schema_version": "data_manifest_v1",
+            "data_seed": 42,
+            "hans_split_seed": 42,
+            "hans": {
+                "build": _hans_identity_entry(["hans_train::build-0"]),
+                "dev": _hans_identity_entry(["hans_train::dev-0"]),
+                "evaluation": _hans_identity_entry(
+                    ["hans_evaluation::ex0", "hans_evaluation::ex1"]
+                ),
+            },
+        },
     )
     write_json(
         manifests / "environment_manifest.json",
@@ -158,7 +191,7 @@ def _create_smoke_root(
         manifests / "data_access.jsonl",
         [
             {"sequence": 0, "timestamp": "2026-08-08T00:00:00+00:00", "event": "dataset_access", "dataset": "hans", "split": "evaluation", "purpose": "manifest_identity_only"},
-            {"sequence": 1, "timestamp": "2026-08-08T00:00:01+00:00", "event": "manifest_identity_summary", "dataset": "hans", "split": "evaluation", "purpose": "manifest_identity_only", "identity_counts": {"build": 1, "dev": 1, "evaluation": 1}, "identity_checksums": {"build": HASH_A, "dev": HASH_A, "evaluation": HASH_A}},
+            {"sequence": 1, "timestamp": "2026-08-08T00:00:01+00:00", "event": "manifest_identity_summary", "dataset": "hans", "split": "evaluation", "purpose": "manifest_identity_only", "identity_counts": {"build": 1, "dev": 1, "evaluation": 2}, "identity_checksums": {"build": HASH_A, "dev": HASH_A, "evaluation": HASH_A}},
         ],
     )
 
@@ -288,6 +321,96 @@ class Stage2ValidationTest(unittest.TestCase):
 
             self.assertEqual("pass", report["checks"]["hans_recomputation"]["state"])
             self.assertEqual("pass", report["checks"]["audit_order"]["state"])
+
+    def test_validator_requires_ordered_prediction_ids_to_equal_manifest_membership(self):
+        def missing(rows):
+            return rows[:1]
+
+        def extra(rows):
+            return [*rows, dict(rows[0], pair_id="hans_evaluation::ex2")]
+
+        def reordered(rows):
+            return list(reversed(rows))
+
+        def duplicate(rows):
+            return [rows[0], dict(rows[1], pair_id=rows[0]["pair_id"])]
+
+        def raw(rows):
+            return [dict(rows[0], pair_id="ex0"), rows[1]]
+
+        def wrong_namespace(rows):
+            return [dict(rows[0], pair_id="hans_train::ex0"), rows[1]]
+
+        transforms = (missing, extra, reordered, duplicate, raw, wrong_namespace)
+        with tempfile.TemporaryDirectory() as tmp:
+            for index, transform in enumerate(transforms):
+                with self.subTest(transform=transform.__name__):
+                    root = _create_smoke_root(Path(tmp) / f"ids-{index}")
+                    run = root / "seed_42" / "full_sr"
+                    prediction_path = run / "hans_predictions.jsonl"
+                    rows = [
+                        json.loads(line)
+                        for line in prediction_path.read_text(encoding="utf-8").splitlines()
+                    ]
+                    write_jsonl(prediction_path, transform(rows))
+                    _rehash_status(run)
+
+                    with self.assertRaisesRegex(
+                        ValueError, "ordered HANS prediction IDs.*selected_ids"
+                    ):
+                        validate_smoke_root(
+                            root,
+                            expected_conditions=PRIMARY_CONDITIONS,
+                            canonical_dir=Path(tmp) / "canonical_v1",
+                        )
+
+    def test_validator_rejects_invalid_hans_manifest_identities_and_checksums(self):
+        def raw(entry):
+            entry["full_ids"][0] = entry["selected_ids"][0] = "ex0"
+
+        def wrong_namespace(entry):
+            entry["full_ids"][0] = entry["selected_ids"][0] = "hans_train::ex0"
+
+        def double_qualified(entry):
+            entry["full_ids"][0] = entry["selected_ids"][0] = (
+                "hans_evaluation::hans_evaluation::ex0"
+            )
+
+        def duplicate(entry):
+            entry["full_ids"][1] = entry["selected_ids"][1] = entry["full_ids"][0]
+
+        def invalid_checksum(entry):
+            entry["selected_ids_sha256"] = "0" * 64
+
+        with tempfile.TemporaryDirectory() as tmp:
+            for index, transform in enumerate(
+                (raw, wrong_namespace, double_qualified, duplicate, invalid_checksum)
+            ):
+                with self.subTest(transform=transform.__name__):
+                    root = _create_smoke_root(Path(tmp) / f"manifest-{index}")
+                    path = root / "manifests" / "data_manifest.json"
+                    manifest = json.loads(path.read_text(encoding="utf-8"))
+                    entry = manifest["hans"]["evaluation"]
+                    transform(entry)
+                    if transform is not invalid_checksum:
+                        digest = sha256(
+                            json.dumps(
+                                entry["full_ids"],
+                                ensure_ascii=False,
+                                allow_nan=False,
+                                sort_keys=True,
+                                separators=(",", ":"),
+                            ).encode("utf-8")
+                        ).hexdigest()
+                        entry["full_ids_sha256"] = entry["selected_ids_sha256"] = digest
+                    write_json(path, manifest)
+
+                    with self.assertRaisesRegex(ValueError, "HANS manifest"):
+                        validate_smoke_root(
+                            root,
+                            expected_conditions=PRIMARY_CONDITIONS,
+                            canonical_dir=Path(tmp) / "canonical_v1",
+                        )
 
     def test_validator_rejects_evaluation_access_before_final_marker(self):
         with tempfile.TemporaryDirectory() as tmp:

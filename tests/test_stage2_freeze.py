@@ -46,7 +46,11 @@ class CanonicalManifestBackend:
             ("ood", "wanli"): ("alisawuffles/WANLI", "test", ["pairID", "uid", "id", "idx"], []),
         }
         def entry(group, name, count):
-            values = [f"{name}-{index}" for index in range(count)]
+            if group == "hans":
+                namespace = "hans_evaluation" if name == "evaluation" else "hans_train"
+                values = [f"{namespace}::{name}-{index}" for index in range(count)]
+            else:
+                values = [f"{name}-{index}" for index in range(count)]
             payload = json.dumps(values, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
             import hashlib
             digest = hashlib.sha256(payload).hexdigest()
@@ -492,6 +496,24 @@ class Stage2FreezeTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "disjoint"):
                 _strict_data_manifest(data)
 
+            for invalid_id in ("evaluation-0", "hans_train::evaluation-0"):
+                with self.subTest(invalid_id=invalid_id):
+                    data = json.loads(data_path.read_text(encoding="utf-8"))
+                    evaluation = data["hans"]["evaluation"]
+                    evaluation["full_ids"] = evaluation["selected_ids"] = [invalid_id]
+                    digest = hashlib.sha256(
+                        json.dumps(
+                            [invalid_id],
+                            ensure_ascii=False,
+                            allow_nan=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ).encode("utf-8")
+                    ).hexdigest()
+                    evaluation["full_ids_sha256"] = evaluation["selected_ids_sha256"] = digest
+                    with self.assertRaisesRegex(ValueError, "HANS manifest"):
+                        _strict_data_manifest(data)
+
     def test_notebook_and_cli_contracts_are_fail_fast_and_sidecar_bound(self):
         notebook = (ROOT / "notebooks" / "stage2_colab_a100_smoke.ipynb").read_text(encoding="utf-8")
         parsed_notebook = json.loads(notebook)
@@ -606,6 +628,29 @@ class Stage2FreezeTest(unittest.TestCase):
                 verify_freeze_bundle(freeze)
 
             data_path.write_bytes(original_data)
+            for invalid_id in ("evaluation-0", "hans_train::evaluation-0"):
+                with self.subTest(invalid_id=invalid_id):
+                    data = json.loads(original_data)
+                    entry = data["hans"]["evaluation"]
+                    entry["full_ids"] = entry["selected_ids"] = [invalid_id]
+                    import hashlib
+                    digest = hashlib.sha256(
+                        json.dumps(
+                            [invalid_id],
+                            ensure_ascii=False,
+                            allow_nan=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ).encode("utf-8")
+                    ).hexdigest()
+                    entry["full_ids_sha256"] = entry["selected_ids_sha256"] = digest
+                    write_json(data_path, data)
+                    _write_inventory(freeze)
+                    with self.assertRaisesRegex(ValueError, "HANS manifest"):
+                        verify_freeze_bundle(freeze)
+
+            data_path.write_bytes(original_data)
+            _write_inventory(freeze)
             frozen_expectations = freeze / "source_expectations.json"
             values = json.loads(frozen_expectations.read_text(encoding="utf-8"))
             values["execution_commit"] = "0" * 40

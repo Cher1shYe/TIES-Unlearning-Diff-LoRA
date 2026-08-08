@@ -12,6 +12,7 @@ import re
 from typing import Any, Mapping, Sequence
 
 from canonical.artifacts import sha256_file
+from canonical.data import validate_hans_manifest_identities
 from canonical.hans import aggregate_hans_predictions
 from canonical.runner import _METHOD_OUTPUTS, _SHARED_OUTPUTS
 from canonical.stage2_contract import STAGE2_SEED
@@ -245,6 +246,7 @@ def _validate_method(
     method: str,
     seed: int,
     common: Mapping[str, str],
+    expected_hans_ids: Sequence[str],
 ) -> None:
     _check_success_status(run_dir, required_outputs=_METHOD_OUTPUTS)
     config = _read_json(run_dir / "config.json")
@@ -259,6 +261,11 @@ def _validate_method(
             raise ValueError(f"run manifest {key} does not bind the root artifact: {run_dir}")
     checkpoint_hash = _manifest_checkpoint(manifest, path=run_dir / "run_manifest.json")
     rows = _read_jsonl(run_dir / "hans_predictions.jsonl")
+    prediction_ids = [row.get("pair_id") for row in rows]
+    if prediction_ids != list(expected_hans_ids):
+        raise ValueError(
+            f"ordered HANS prediction IDs do not exactly match data_manifest selected_ids: {run_dir}"
+        )
     for index, row in enumerate(rows, start=1):
         if row.get("method_tag") != method:
             raise ValueError(f"HANS prediction method_tag mismatch at {run_dir}:{index}")
@@ -340,7 +347,7 @@ def _validate_class_prior_log(run_dir: Path, weights: Mapping[str, float]) -> No
             raise ValueError(f"class-prior branch log does not prove loading weight {label}: {weight}")
 
 
-def _root_common(root: Path) -> tuple[dict[str, str], dict[str, Any]]:
+def _root_common(root: Path) -> tuple[dict[str, str], dict[str, Any], list[str]]:
     snapshot = root / "protocol_snapshot"
     protocol = snapshot / "FROZEN_EXPERIMENT_PROTOCOL.md"
     recorded_protocol = snapshot / "protocol_sha256.txt"
@@ -354,6 +361,7 @@ def _root_common(root: Path) -> tuple[dict[str, str], dict[str, Any]]:
     if not data.is_file() or not environment.is_file():
         raise ValueError("smoke root lacks data or environment manifest")
     data_manifest = _read_json(data)
+    expected_hans_ids = validate_hans_manifest_identities(data_manifest.get("hans"))
     data_seed = _require_seed(data_manifest.get("data_seed"), name="data_manifest.data_seed")
     hans_split_seed = _require_seed(
         data_manifest.get("hans_split_seed"), name="data_manifest.hans_split_seed"
@@ -367,6 +375,7 @@ def _root_common(root: Path) -> tuple[dict[str, str], dict[str, Any]]:
             "hans_split_seed": hans_split_seed,
         },
         _read_json(environment),
+        expected_hans_ids,
     )
 
 
@@ -387,7 +396,7 @@ def validate_smoke_root(
         expected_omission = f"seed_{STAGE2_SEED}/shared_phase2/checkpoints/shared.pt"
         if set(omissions) != {expected_omission} or not isinstance(omissions[expected_omission], str) or re.fullmatch(r"[0-9a-f]{64}", omissions[expected_omission]) is None:
             raise ValueError("weight-optional validation requires the exact shared checkpoint omission")
-    common, _environment = _root_common(root)
+    common, _environment, expected_hans_ids = _root_common(root)
     commands = _read_json(root / "commands.json")
     if commands.get("profile_name") != "stage2_smoke_v1":
         raise ValueError("commands.json profile_name is not the frozen Stage 2 smoke profile")
@@ -417,7 +426,13 @@ def validate_smoke_root(
         )
         for method in conditions:
             run_dir = seed_dir / method
-            _validate_method(run_dir, method=method, seed=seed, common=common)
+            _validate_method(
+                run_dir,
+                method=method,
+                seed=seed,
+                common=common,
+                expected_hans_ids=expected_hans_ids,
+            )
             if method != "standard_lora":
                 branch = _read_json(run_dir / "run_manifest.json").get("shared_phase2_checkpoint")
                 if branch != expected_checkpoint:
@@ -494,7 +509,7 @@ def _scrub_transient(value: Any) -> Any:
 
 
 def _repeat_full_sr(root: Path) -> tuple[Mapping[str, Any], Mapping[str, Any], Mapping[str, Any], Mapping[str, Any]]:
-    common, environment = _root_common(root)
+    common, environment, _expected_hans_ids = _root_common(root)
     matrices = _read_json(root / "manifests" / "run_matrix.json")
     seeds = matrices.get("training_seeds")
     if not isinstance(seeds, list) or len(seeds) != 1 or not isinstance(seeds[0], int):
@@ -530,7 +545,7 @@ def _validate_a100_root_identity(
         raise ValueError("A100 smoke environment must be colab_a100")
     if commands.get("expected_condition_tags") != list(conditions):
         raise ValueError("A100 smoke condition tags do not match its required matrix")
-    common, environment = _root_common(root)
+    common, environment, _expected_hans_ids = _root_common(root)
     del common
     gpu = commands.get("gpu_name")
     if not isinstance(gpu, str) or "A100" not in gpu or environment.get("gpu") != gpu:

@@ -9,6 +9,10 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 HansRecord = dict[str, Any]
 RngFactory = Callable[[int], Any]
+_HANS_SOURCE_PREFIXES = {
+    "train": "hans_train::",
+    "evaluation": "hans_evaluation::",
+}
 
 
 def sample_dataset(dataset: Any, count: int, seed: int) -> Any:
@@ -57,6 +61,27 @@ def stable_record_id(
             if stable_id:
                 return stable_id
     return sha256(_canonical_bytes(dict(record))).hexdigest()
+
+
+def qualify_hans_pair_id(pair_id: Any, physical_source_partition: str) -> str:
+    """Return the source-file-qualified identity for one official HANS row."""
+    if physical_source_partition not in _HANS_SOURCE_PREFIXES:
+        raise ValueError("HANS physical source partition must be 'train' or 'evaluation'")
+    if not isinstance(pair_id, str) or not pair_id:
+        raise ValueError("HANS pairID must be a non-empty string")
+    expected_prefix = _HANS_SOURCE_PREFIXES[physical_source_partition]
+    matching_prefix = next(
+        (prefix for prefix in _HANS_SOURCE_PREFIXES.values() if pair_id.startswith(prefix)),
+        None,
+    )
+    if matching_prefix is not None:
+        suffix = pair_id[len(matching_prefix):]
+        if not suffix or any(suffix.startswith(prefix) for prefix in _HANS_SOURCE_PREFIXES.values()):
+            raise ValueError("HANS pairID has malformed source qualification")
+        if matching_prefix != expected_prefix:
+            raise ValueError("HANS pairID does not match its physical source partition")
+        return pair_id
+    return f"{expected_prefix}{pair_id}"
 
 
 def deterministic_cap_records(
@@ -119,6 +144,99 @@ def _record_value(record: Mapping[str, Any], canonical: str, source: str) -> Any
     if source in record:
         return record[source]
     raise ValueError(f"HANS record is missing required field {source!r}")
+
+
+def _hans_content_identity(record: Mapping[str, Any]) -> str:
+    """Hash exact semantic HANS content without including its source-local pairID."""
+    content = {
+        "gold_label": str(_record_value(record, "gold_label", "gold_label")),
+        "premise": str(_record_value(record, "premise", "sentence1")),
+        "hypothesis": str(_record_value(record, "hypothesis", "sentence2")),
+        "heuristic": str(_record_value(record, "heuristic", "heuristic")),
+        "subcase": str(_record_value(record, "subcase", "subcase")),
+    }
+    return sha256(_canonical_bytes(content)).hexdigest()
+
+
+def _content_identities(
+    records: Sequence[Mapping[str, Any]], name: str
+) -> set[str]:
+    identities = [_hans_content_identity(record) for record in records]
+    if len(identities) != len(set(identities)):
+        raise ValueError(f"duplicate {name} content")
+    return set(identities)
+
+
+def validate_hans_content_integrity(
+    build_records: Sequence[Mapping[str, Any]],
+    dev_records: Sequence[Mapping[str, Any]],
+    evaluation_records: Sequence[Mapping[str, Any]],
+) -> None:
+    """Reject exact-content duplicates and leakage independently of HANS pair IDs."""
+    partitions = (
+        ("HANS build", _content_identities(build_records, "HANS build")),
+        ("HANS dev", _content_identities(dev_records, "HANS dev")),
+        ("HANS evaluation", _content_identities(evaluation_records, "HANS evaluation")),
+    )
+    for left in range(len(partitions)):
+        for right in range(left + 1, len(partitions)):
+            overlap = partitions[left][1] & partitions[right][1]
+            if overlap:
+                label = f"{partitions[left][0].removeprefix('HANS ').lower()}/{partitions[right][0].removeprefix('HANS ').lower()}"
+                preview = ", ".join(sorted(overlap)[:5])
+                raise ValueError(f"HANS content {label} overlap detected: {preview}")
+
+
+def validate_hans_manifest_identities(hans: Mapping[str, Any]) -> list[str]:
+    """Validate HANS manifest arrays/checksums and return ordered evaluation IDs."""
+    expected_sources = {
+        "build": "train",
+        "dev": "train",
+        "evaluation": "evaluation",
+    }
+    if not isinstance(hans, Mapping) or set(hans) != set(expected_sources):
+        raise ValueError("HANS manifest must contain build, dev, and evaluation identities")
+    full_partitions: dict[str, list[str]] = {}
+    for name, physical_source in expected_sources.items():
+        entry = hans[name]
+        if not isinstance(entry, Mapping):
+            raise ValueError(f"HANS manifest {name} identity entry is invalid")
+        arrays: dict[str, list[str]] = {}
+        for key in ("full_ids", "selected_ids"):
+            values = entry.get(key)
+            identities_are_canonical = False
+            if isinstance(values, list) and all(isinstance(value, str) for value in values):
+                try:
+                    identities_are_canonical = all(
+                        qualify_hans_pair_id(value, physical_source) == value
+                        for value in values
+                    )
+                except ValueError:
+                    identities_are_canonical = False
+            if (
+                not isinstance(values, list)
+                or not values
+                or not identities_are_canonical
+                or len(values) != len(set(values))
+            ):
+                raise ValueError(f"HANS manifest {name} {key} identities are malformed, duplicated, or in the wrong namespace")
+            arrays[key] = values
+            count_key = "full_count" if key == "full_ids" else "selected_count"
+            if entry.get(count_key) != len(values):
+                raise ValueError(f"HANS manifest {name} {key} count is invalid")
+            checksum_key = f"{key}_sha256"
+            expected_checksum = sha256(_canonical_bytes(values)).hexdigest()
+            if entry.get(checksum_key) != expected_checksum:
+                raise ValueError(f"HANS manifest {name} {key} checksum is invalid")
+        if not set(arrays["selected_ids"]).issubset(arrays["full_ids"]):
+            raise ValueError(f"HANS manifest {name} selected_ids are not full members")
+        full_partitions[name] = arrays["full_ids"]
+    validate_hans_disjointness(
+        full_partitions["build"],
+        full_partitions["dev"],
+        full_partitions["evaluation"],
+    )
+    return list(hans["evaluation"]["selected_ids"])
 
 
 def _normalized_hans_record(record: Mapping[str, Any]) -> tuple[str, tuple[str, str, str]]:

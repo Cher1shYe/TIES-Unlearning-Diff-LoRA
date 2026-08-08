@@ -29,7 +29,7 @@ from configs.config import TrainConfig
 
 HANS_ROWS = [
     {
-        "pairID": f"{label[:1]}-{heuristic[:2]}-{index}",
+        "pairID": f"hans_evaluation::{label[:1]}-{heuristic[:2]}-{index}",
         "gold_label": label,
         "heuristic": heuristic,
         "subcase": f"{heuristic}-case",
@@ -235,12 +235,17 @@ class DataIdentityManifestTest(unittest.TestCase):
             "validation_matched": FixtureRows([{"idx": f"validation-{index}"} for index in range(4)]),
         }
         hans_manifest = {
-            "build_pair_ids": ["build-1"],
-            "dev_pair_ids": ["dev-1"],
-            "evaluation_pair_ids": ["eval-1", "eval-2", "eval-3", "eval-4"],
+            "build_pair_ids": ["hans_train::build-1"],
+            "dev_pair_ids": ["hans_train::dev-1"],
+            "evaluation_pair_ids": [
+                "hans_evaluation::eval-1",
+                "hans_evaluation::eval-2",
+                "hans_evaluation::eval-3",
+                "hans_evaluation::eval-4",
+            ],
             "evaluation_records": [
                 {
-                    "pairID": f"eval-{index}",
+                    "pairID": f"hans_evaluation::eval-{index}",
                     "gold_label": label,
                     "heuristic": heuristic,
                     "subcase": f"{heuristic}-case",
@@ -424,6 +429,25 @@ class StructuredDataAccessAuditTest(unittest.TestCase):
                 read_jsonl(path)[0]["purpose"],
             )
 
+    def test_raw_hans_loader_qualifies_ids_before_returning_official_rows(self):
+        dataloader = self._dataloader_module_with_dependency_stubs()
+
+        class RawDataset:
+            def __init__(self, pair_id):
+                self.rows = [{"pairID": pair_id}]
+
+            def map(self, callback, batched=False):
+                self.rows = [{**row, **callback(dict(row))} for row in self.rows]
+                return self
+
+        with patch.object(dataloader, "load_dataset", return_value=RawDataset("ex0")):
+            train = dataloader._load_hans_dataset("train")
+        with patch.object(dataloader, "load_dataset", return_value=RawDataset("ex0")):
+            evaluation = dataloader._load_hans_dataset("eval")
+
+        self.assertEqual("hans_train::ex0", train.rows[0]["pairID"])
+        self.assertEqual("hans_evaluation::ex0", evaluation.rows[0]["pairID"])
+
     def test_hans_evaluation_loader_passes_pair_id_preference_to_capping(self):
         dataloader = self._dataloader_module_with_dependency_stubs()
 
@@ -457,7 +481,7 @@ class StructuredDataAccessAuditTest(unittest.TestCase):
             raise RuntimeError("capping observed")
 
         rows = [{
-            "pairID": "pair-1",
+            "pairID": "hans_evaluation::pair-1",
             "gold_label": "entailment",
             "heuristic": "lexical_overlap",
             "subcase": "case",
@@ -474,6 +498,83 @@ class StructuredDataAccessAuditTest(unittest.TestCase):
         self.assertEqual(
             (1, 42, ("gold_label", "heuristic", "subcase"), ("pairID",)),
             captured["args"][1:],
+        )
+        self.assertEqual(
+            "hans_evaluation::pair-1",
+            captured["args"][0].rows[0]["pairID"],
+        )
+
+    def test_evaluation_cap_order_is_preserved_in_tokenized_prediction_ids(self):
+        dataloader = self._dataloader_module_with_dependency_stubs()
+
+        class HansDataset:
+            def __init__(self, rows):
+                self.rows = [dict(row) for row in rows]
+
+            @property
+            def column_names(self):
+                return list(self.rows[0])
+
+            def map(self, callback, batched=False):
+                if batched:
+                    batch = {
+                        key: [row[key] for row in self.rows]
+                        for key in self.rows[0]
+                    }
+                    additions = callback(batch)
+                    self.rows = [
+                        {**row, **{key: values[index] for key, values in additions.items()}}
+                        for index, row in enumerate(self.rows)
+                    ]
+                else:
+                    self.rows = [{**row, **callback(dict(row))} for row in self.rows]
+                return self
+
+            def rename_column(self, old, new):
+                self.rows = [
+                    {new if key == old else key: value for key, value in row.items()}
+                    for row in self.rows
+                ]
+                return self
+
+            def filter(self, predicate):
+                self.rows = [row for row in self.rows if predicate(row)]
+                return self
+
+        rows = [
+            {
+                "pairID": f"hans_evaluation::ex{index}",
+                "gold_label": label,
+                "heuristic": heuristic,
+                "subcase": f"case-{index}",
+                "sentence1": f"premise-{index}",
+                "sentence2": f"hypothesis-{index}",
+            }
+            for index, (label, heuristic) in enumerate(
+                (("entailment", "lexical_overlap"), ("non-entailment", "subsequence"))
+            )
+        ]
+        cfg = SimpleNamespace(hans_eval_size=2, data_seed=42, max_seq_length=8)
+
+        def known_cap(dataset, *_args, **_kwargs):
+            return HansDataset(list(reversed(dataset.rows)))
+
+        def tokenizer(premises, hypotheses, **_kwargs):
+            return {
+                "input_ids": [[index] for index, _ in enumerate(premises)],
+                "attention_mask": [[1] for _ in hypotheses],
+            }
+
+        with patch.object(dataloader, "_load_hans_dataset", return_value=HansDataset(rows)), patch.object(
+            dataloader, "_cap_final_evaluation_dataset", side_effect=known_cap
+        ):
+            prepared = dataloader._prepare_hans_base_dataset(
+                cfg, tokenizer, split="evaluation"
+            )
+
+        self.assertEqual(
+            ["hans_evaluation::ex1", "hans_evaluation::ex0"],
+            [row["pair_id"] for row in prepared.rows],
         )
 
     def test_shared_metadata_contains_class_priors_and_checkpoint_hash(self):

@@ -15,6 +15,7 @@
 - Smoke budgets are fixed at sequence length 64, batch size 8, MNLI 96/96, one epoch per phase, four Phase-2 batches, KL 1/2/1, kNN k=3, analysis counts 16/8 and 8/4 per HANS label group, HANS evaluation 384, and 128 for each other OOD evaluation set.
 - `data_seed=42`, `hans_split_seed=42`, and `training_seed=42` remain separated.
 - Official HANS evaluation may be accessed only after the `final_evaluation_start` audit event.
+- Official HANS `pairID` is source-file-local: qualify train rows once as `hans_train::<pairID>` and evaluation rows once as `hans_evaluation::<pairID>` immediately after raw loading. Build/dev share the train namespace, while an independent exact-content gate excludes `pairID` and rejects duplicate or overlapping semantic rows.
 - A100 repeat success means `abs(run1_hans_non_entailment - repeat_hans_non_entailment) <= 0.005`.
 - Production monitoring is 300-second checks, 3,600-second `STALL_WARNING`, and 43,200-second hard timeout. Only hard timeout auto-terminates.
 - Smoke output must be under `ties_results/stage2_smoke/`; any path containing a component named `canonical_v1` is rejected.
@@ -26,7 +27,7 @@
 
 - `canonical/smoke.py`: immutable smoke profile, condition sets, path isolation, and repeat comparison.
 - `canonical/access_audit.py`: strict structured data-access event writer and event names.
-- `canonical/data.py`: stable record identities and deterministic capped selection.
+- `canonical/data.py`: stable record identities, source-qualified HANS identities, namespace-independent HANS content integrity, and deterministic capped selection.
 - `canonical/data_manifest.py`: dataset identity/checksum entries for smoke and full canonical manifests.
 - `canonical/runner.py`: private reusable condition-matrix execution while preserving `run_core()` defaults.
 - `canonical/backend.py`: smoke/full manifests, per-run audit path, and shared checkpoint metadata.
@@ -194,6 +195,11 @@ def assert_stage2_output_path(output_dir: Path, repo_root: Path) -> Path:
 - [ ] **Step 5: Implement stable identity and deterministic round-robin strata selection**
 
 Use a source ID from the first non-empty preferred field; otherwise hash canonical JSON of the record. Rank each ID by `sha256(f"{seed}\0{stable_id}")`, sort within each stratum, then round-robin across sorted strata until `limit` is reached. Return rows in selected-ID order. Apply the helper before tokenization in every final evaluation loader; HANS uses `("gold_label", "heuristic", "subcase")`, while other datasets use no strata.
+
+For HANS, the preferred field is already source-qualified before this helper is
+called. The evaluation loader must preserve the selected order in emitted
+prediction rows, and Stage 2 validation compares that ordered sequence exactly
+with the manifest evaluation `selected_ids`.
 
 - [ ] **Step 6: Run focused and regression tests and confirm GREEN**
 

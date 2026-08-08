@@ -246,9 +246,9 @@ class RealCanonicalBackendContractTest(unittest.TestCase):
                     {key: events[0][key] for key in ("event", "dataset", "split", "purpose")},
                 )
                 return {
-                    "build_pair_ids": ["build-1"],
-                    "dev_pair_ids": ["dev-1"],
-                    "evaluation_pair_ids": ["eval-1"],
+                    "build_pair_ids": ["hans_train::build-1"],
+                    "dev_pair_ids": ["hans_train::dev-1"],
+                    "evaluation_pair_ids": ["hans_evaluation::eval-1"],
                 }
 
             dataloader_stub.make_hans_split_manifest = fake_hans_manifest

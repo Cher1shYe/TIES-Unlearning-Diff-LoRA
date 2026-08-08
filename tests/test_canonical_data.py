@@ -10,8 +10,10 @@ if str(ROOT) not in sys.path:
 
 from canonical.data import (
     dataset_row_ids,
+    qualify_hans_pair_id,
     sample_dataset,
     split_hans_records,
+    validate_hans_content_integrity,
     validate_hans_disjointness,
 )
 
@@ -52,6 +54,21 @@ def hans_record(pair_id, label, heuristic, subcase):
 
 
 class CanonicalDataContractTest(unittest.TestCase):
+    def test_hans_pair_id_is_qualified_by_physical_source_partition(self):
+        self.assertEqual("hans_train::ex0", qualify_hans_pair_id("ex0", "train"))
+        self.assertEqual(
+            "hans_evaluation::ex0",
+            qualify_hans_pair_id("ex0", "evaluation"),
+        )
+
+    def test_hans_pair_id_qualification_is_idempotent_and_rejects_wrong_source(self):
+        self.assertEqual(
+            "hans_train::ex0",
+            qualify_hans_pair_id("hans_train::ex0", "train"),
+        )
+        with self.assertRaisesRegex(ValueError, "physical source partition"):
+            qualify_hans_pair_id("hans_evaluation::ex0", "train")
+
     def test_training_seed_cannot_change_fixed_data_ids(self):
         source = FakeDataset({"idx": index} for index in range(20))
 
@@ -121,12 +138,52 @@ class CanonicalDataContractTest(unittest.TestCase):
             split_hans_records([record], rng_factory=lambda _seed: ReverseRng())
 
     def test_build_dev_and_evaluation_must_be_disjoint(self):
-        validate_hans_disjointness(["b-1"], ["d-1"], ["e-1"])
+        validate_hans_disjointness(
+            ["hans_train::b-1"],
+            ["hans_train::d-1"],
+            ["hans_evaluation::e-1"],
+        )
 
         with self.assertRaisesRegex(ValueError, "build/evaluation"):
             validate_hans_disjointness(["shared"], ["d-1"], ["shared"])
         with self.assertRaisesRegex(ValueError, "dev/evaluation"):
             validate_hans_disjointness(["b-1"], ["shared"], ["shared"])
+
+    def test_build_and_dev_reject_same_physical_train_identity(self):
+        with self.assertRaisesRegex(ValueError, "build/dev"):
+            validate_hans_disjointness(
+                ["hans_train::ex0"],
+                ["hans_train::ex0"],
+                ["hans_evaluation::ex0"],
+            )
+
+    def test_hans_content_overlap_ignores_source_qualified_pair_id(self):
+        train = hans_record(
+            "hans_train::ex0", "entailment", "lexical_overlap", "case"
+        )
+        evaluation = dict(train, pairID="hans_evaluation::ex0")
+
+        with self.assertRaisesRegex(ValueError, "content.*build/evaluation"):
+            validate_hans_content_integrity([train], [], [evaluation])
+
+    def test_same_local_id_with_different_content_in_official_files_passes(self):
+        train = hans_record(
+            "hans_train::ex0", "entailment", "lexical_overlap", "case"
+        )
+        evaluation = hans_record(
+            "hans_evaluation::ex0", "non-entailment", "subsequence", "other-case"
+        )
+
+        validate_hans_content_integrity([train], [], [evaluation])
+
+    def test_duplicate_hans_content_within_partition_is_rejected(self):
+        first = hans_record(
+            "hans_train::ex0", "entailment", "lexical_overlap", "case"
+        )
+        duplicate = dict(first, pairID="hans_train::ex1")
+
+        with self.assertRaisesRegex(ValueError, "duplicate HANS build content"):
+            validate_hans_content_integrity([first, duplicate], [], [])
 
 
 if __name__ == "__main__":

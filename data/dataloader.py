@@ -11,8 +11,10 @@ from datasets import Dataset, Value, concatenate_datasets, load_dataset
 from configs.config import TrainConfig
 from canonical.data import (
     deterministic_cap_records,
+    qualify_hans_pair_id,
     sample_dataset,
     split_hans_records,
+    validate_hans_content_integrity,
     validate_hans_disjointness,
 )
 from canonical.access_audit import record_dataset_access
@@ -64,15 +66,22 @@ def _cap_final_evaluation_dataset(
 def _load_hans_dataset(split: str = "eval"):
     # split="eval" -> heuristics_evaluation_set.txt  (held-out test only)
     # split="train" -> heuristics_train_set.txt      (shortcut capture + localization)
-    # The two files are disjoint example sets with identical columns, so the choice
-    # only affects *which* HANS examples are seen, never the downstream pipeline.
+    # pairID is local to each official file, so qualify it by the physical source
+    # immediately after loading and before any split, cap, tokenization, or output.
+    if split not in {"train", "eval"}:
+        raise ValueError("raw HANS split must be 'train' or 'eval'")
     fname = "heuristics_train_set.txt" if split == "train" else "heuristics_evaluation_set.txt"
     hans_url = f"https://raw.githubusercontent.com/tommccoy1/hans/master/{fname}"
     try:
         hans = load_dataset("csv", data_files=hans_url, delimiter="\t", split="train")
     except Exception:
         hans = load_dataset("csv", data_files=f"./{fname}", delimiter="\t", split="train")
-    return hans
+    physical_source = "train" if split == "train" else "evaluation"
+    return hans.map(
+        lambda record: {
+            "pairID": qualify_hans_pair_id(record.get("pairID"), physical_source)
+        }
+    )
 
 def load_esnli_raw():
     """Return valid e-SNLI test records before any tokenization."""
@@ -98,6 +107,7 @@ def load_esnli_raw():
 def _hans_train_partitions(cfg: TrainConfig):
     hans = _load_hans_dataset("train")
     records = [dict(hans[index]) for index in range(len(hans))]
+    validate_hans_content_integrity(records, [], [])
     split = split_hans_records(records, seed=cfg.hans_split_seed)
     return Dataset.from_list(list(split.build_records)), Dataset.from_list(list(split.dev_records)), split
 
@@ -237,6 +247,11 @@ def make_hans_split_manifest(cfg: TrainConfig):
     evaluation_records = [dict(evaluation[index]) for index in range(len(evaluation))]
     evaluation_ids = [str(record["pairID"]) for record in evaluation_records]
     validate_hans_disjointness(split.build_pair_ids, split.dev_pair_ids, evaluation_ids)
+    validate_hans_content_integrity(
+        split.build_records,
+        split.dev_records,
+        evaluation_records,
+    )
     manifest = split.manifest()
     manifest["evaluation_count"] = len(evaluation_ids)
     manifest["evaluation_pair_ids"] = evaluation_ids

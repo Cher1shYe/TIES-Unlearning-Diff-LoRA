@@ -140,7 +140,11 @@ gold_label × heuristic × subcase
 - HANS-train dev：20%；
 - HANS evaluation：官方 `heuristics_evaluation_set.txt`，不参与上述划分。
 
-划分算法同样冻结：在每个联合 stratum 内，先按稳定 `pairID` 排序，再使用 NumPy `default_rng(42)` 生成排列；前 `floor(0.20 × n_stratum)` 条进入 dev，其余进入 build。若某个 stratum 少于 5 条，则全部进入 build并在 manifest 中记录。不得因模型结果重新抽取 split。
+划分算法同样冻结：在每个联合 stratum 内，先按稳定 canonical HANS ID 排序，再使用 NumPy `default_rng(42)` 生成排列；前 `floor(0.20 × n_stratum)` 条进入 dev，其余进入 build。若某个 stratum 少于 5 条，则全部进入 build并在 manifest 中记录。不得因模型结果重新抽取 split。
+
+**Stage 2 预结果身份澄清（不改变数据成员、比例或训练行为）**：官方 `heuristics_train_set.txt` 与 `heuristics_evaluation_set.txt` 中的 `pairID` 是源文件局部编号，并非跨文件全局 ID；两个文件都使用 `ex0` 至 `ex29999`。因此 canonical 身份必须在原始文件加载后立即按物理源分区限定：train 文件使用 `hans_train::<pairID>`，evaluation 文件使用 `hans_evaluation::<pairID>`。逻辑 build 与 dev 都来自同一个 train 文件，必须共享 `hans_train::` 命名空间；不得分别使用 build/dev 前缀来掩盖泄漏。evaluation cap、data manifest 与 `hans_predictions.jsonl` 必须逐行使用同一 `hans_evaluation::` 身份。
+
+源限定不能替代内容完整性检查。另以 `gold_label`、premise、hypothesis、heuristic 和 subcase 的精确规范化内容计算不含 `pairID` 的身份；任一物理/逻辑分区内的重复内容，或 build/dev/evaluation 之间的内容交集，均须 fail closed。此澄清发生在任何成功 smoke 训练或 canonical 结果产生之前，不修改超参数、seed、数据上限、优化器或终点规则。
 
 用途：
 
@@ -148,7 +152,7 @@ gold_label × heuristic × subcase
 - dev：smoke/pilot 检查和实现验证；任何会改变本协议的开发决策必须先发布 addendum；
 - evaluation：canonical 模型完成后的一次性最终评估。
 
-任何样本不得同时出现在 build 和 dev。需要保存原始 row ID/pair ID 及 split checksum。
+任何样本不得同时出现在 build 和 dev。需要以可逆 source-qualified 形式保存原始 source-local pair ID，并保存 split checksum 与内容交集检查结果。
 
 ### 4.3 禁止中间阶段读取官方 HANS evaluation 指标
 
@@ -219,11 +223,14 @@ checkpoint_hash
 
 - `data_seed` 不随 training seed 改变样本 ID；
 - HANS build/dev/evaluation 三者无样本交集；
+- HANS build/dev 使用 `hans_train::`、evaluation 使用 `hans_evaluation::`，且 source-local ID 重用不会被误判为样本重叠；
+- HANS 精确内容身份在分区内无重复、在分区间无交集；
 - 六个核心条件只改变其声明的实验因素；
 - 同一种子下双适配器变体加载同一 Phase-2 checkpoint hash；
 - `trim_ratio=0.2` 的实际语义为保留绝对值最大的 20% N-delta 元素；
 - 标准 JSON 序列化拒绝非有限数；
 - HANS aggregate metrics 可由逐样本文件完全复算；
+- 每个完成方法的 HANS prediction ID 顺序与 data manifest evaluation `selected_ids` 完全一致；
 - official HANS evaluation 未在中间训练日志中出现。
 
 ## 5. 冻结模型与训练配置

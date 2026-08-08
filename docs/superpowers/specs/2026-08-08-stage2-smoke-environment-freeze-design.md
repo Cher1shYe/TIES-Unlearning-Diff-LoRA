@@ -100,6 +100,14 @@ Optional evaluation caps are added to `TrainConfig` with `None` defaults. `None`
 
 Sampling uses stable source IDs where available and a content-derived SHA-256 identity otherwise. HANS sampling is stratified so both gold-label groups and all three heuristic families are represented when the requested cap permits it. The selected IDs and their ordered checksums are written to the smoke data manifest.
 
+Official HANS `pairID` values are local to each physical source file. Immediately
+after raw loading, train IDs are represented as `hans_train::<pairID>` and
+evaluation IDs as `hans_evaluation::<pairID>`; logical build and dev retain the
+same train namespace. A separate exact-content identity over gold label,
+premise, hypothesis, heuristic, and subcase excludes `pairID` and rejects
+within-partition duplicates or cross-partition overlap. Source qualification
+therefore resolves local-ID reuse without weakening the leakage gate.
+
 The freeze bundle has a separate canonical-targeted data manifest. It records the complete frozen 100,000-row MNLI training membership, 5,000-row MNLI validation membership, full HANS build/dev/evaluation membership, and full stable or reconstructable identities for e-SNLI, ANLI, SNLI-hard, and WANLI. Smoke-subset checksums never replace these full canonical identities.
 
 ### 3.4 Data-access audit trail
@@ -130,6 +138,9 @@ A Stage 2 validator independently checks:
 - official HANS access ordering;
 - exact recomputation of aggregate HANS metrics from `hans_predictions.jsonl`;
 - prediction schema, row counts, unique pair IDs, and checkpoint hashes;
+- exact ordered equality between every method's HANS prediction IDs and the
+  data-manifest evaluation `selected_ids`, including namespace and checksum
+  validation;
 - environment manifest fields; and
 - absence or emptiness of `ties_results/canonical_v1`.
 

@@ -14,6 +14,7 @@ from datetime import datetime
 from hashlib import sha256
 
 from canonical.artifacts import collect_environment_metadata, sha256_file, write_json
+from canonical.data import validate_hans_manifest_identities
 from canonical.source_package import _EXCLUSIONS_METADATA, _allowed_source, _clean_git_metadata, verify_source_package
 from canonical.stage2_validation import compare_a100_repeat
 
@@ -171,6 +172,7 @@ def _strict_data_manifest(data: dict[str, Any]) -> None:
     hans_sets = [set(data["hans"][name]["full_ids"]) for name in ("build", "dev", "evaluation")]
     if any(hans_sets[left] & hans_sets[right] for left in range(3) for right in range(left + 1, 3)):
         raise ValueError("canonical HANS build/dev/evaluation IDs must be disjoint")
+    validate_hans_manifest_identities(data["hans"])
 
 
 def _commands(root: Path, path: Path, *, mode: str, gpu: str) -> dict[str, Any]:
