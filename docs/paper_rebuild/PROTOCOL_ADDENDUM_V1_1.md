@@ -20,6 +20,7 @@
 - 废止 "parentless source ZIP + expectations sidecar + transport verification" 传输链。
 - 代码经公共 GitHub 仓库分支 `codex/stage1-canonical-infrastructure` 以 `git clone` 获取，并 checkout 到执行时打印并记录的 commit。
 - 代码 provenance 由以下机制保证：runner 的 `_assert_clean_git` 拒绝 dirty tree；每个 run 的 `run_manifest.json` 记录实际 Git commit。
+- 与被废止传输链绑定的重型集成测试（打包克隆内递归重跑完整套件，硬编码 240s 子进程超时）默认跳过；如需运行，设置环境变量 `STAGE2_RUN_PACKAGING_INTEGRATION=1`。打包代码本身保留，其余轻量打包单测不变。
 
 ### 1.3 HANS source-integrity：v5 fail-closed 降级为 informational-but-verified
 

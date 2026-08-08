@@ -484,6 +484,11 @@ class Stage2FreezeTest(unittest.TestCase):
             self.assertIn("canonical/runtime.py", paths)
             self.assertTrue(paths.isdisjoint(forbidden))
 
+    @unittest.skipUnless(
+        os.environ.get("STAGE2_RUN_PACKAGING_INTEGRATION") == "1",
+        "ZIP source transport is deprecated by Addendum v1.1; set "
+        "STAGE2_RUN_PACKAGING_INTEGRATION=1 to run this heavy integration test",
+    )
     def test_current_source_snapshot_clone_contains_notebook_excludes_private_plan_and_runs_full_suite(self):
         if os.environ.get("STAGE2_PACKAGED_CLONE_CHILD") == "1":
             self.skipTest("packaged clone child does not recursively package itself")
