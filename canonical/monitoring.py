@@ -1,14 +1,17 @@
 """Frozen, non-invasive subprocess monitoring for Stage 2 jobs."""
 
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 import json
 import math
+from numbers import Real
+import os
 from pathlib import Path
 import re
 import stat
 import subprocess
 import time
-from typing import Callable, Iterable, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from canonical.artifacts import json_ready
 
@@ -30,6 +33,176 @@ class MonitorPolicy:
 
 
 PRODUCTION_POLICY = MonitorPolicy(300, 3600, 43200)
+
+_COMMON_EVENT_KEYS = {"event", "timestamp", "elapsed_seconds", "command", "cwd"}
+_EVENT_KEYS = {
+    "STARTED": ({*_COMMON_EVENT_KEYS, "policy", "fingerprints"},),
+    "STATUS_CHECK": ({*_COMMON_EVENT_KEYS, "returncode", "fingerprints", "watch_errors"},),
+    "PROGRESS": ({*_COMMON_EVENT_KEYS, "fingerprints"},),
+    "STALL_WARNING": ({*_COMMON_EVENT_KEYS, "stall_seconds", "fingerprints"},),
+    "FATAL_PATTERN": ({*_COMMON_EVENT_KEYS, "pattern", "path"},),
+    "COMPLETED": ({*_COMMON_EVENT_KEYS, "returncode"},),
+    "CRASHED": (
+        {*_COMMON_EVENT_KEYS, "returncode"},
+        {*_COMMON_EVENT_KEYS, "returncode", "failure_stage", "error_type"},
+    ),
+    "HARD_TIMEOUT": ({*_COMMON_EVENT_KEYS, "timeout_seconds"},),
+}
+_FAILED_SUCCESS_EVENTS = {"FATAL_PATTERN", "CRASHED", "HARD_TIMEOUT"}
+
+
+def _reject_nonfinite(value: Any, *, label: str) -> None:
+    if isinstance(value, bool) or value is None or isinstance(value, str):
+        return
+    if isinstance(value, Real):
+        if not math.isfinite(float(value)):
+            raise ValueError(f"non-finite monitor value at {label}")
+        return
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            _reject_nonfinite(item, label=f"{label}.{key}")
+        return
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            _reject_nonfinite(item, label=f"{label}[{index}]")
+
+
+def _normalized_command(command: Sequence[str]) -> list[str]:
+    if not isinstance(command, (list, tuple)) or not command or not all(isinstance(item, str) and item for item in command):
+        raise ValueError("monitor command must be a non-empty string argv")
+    normalized = list(command)
+    for index in range(min(2, len(normalized))):
+        normalized[index] = os.path.normcase(os.path.normpath(normalized[index]))
+    return normalized
+
+
+def _validate_fingerprints(value: Any, *, allow_empty: bool) -> None:
+    if not isinstance(value, list) or (not allow_empty and not value):
+        raise ValueError("monitor fingerprints must be a non-empty list")
+    base = {"path", "exists", "size", "mtime_ns"}
+    for fingerprint in value:
+        if not isinstance(fingerprint, dict) or set(fingerprint) not in (base, {*base, "error"}):
+            raise ValueError("monitor fingerprint schema is invalid")
+        if not isinstance(fingerprint["path"], str) or not fingerprint["path"]:
+            raise ValueError("monitor fingerprint path is invalid")
+        if fingerprint["exists"] not in (True, False, None):
+            raise ValueError("monitor fingerprint exists value is invalid")
+        for key in ("size", "mtime_ns"):
+            item = fingerprint[key]
+            if item is not None and (isinstance(item, bool) or not isinstance(item, int) or item < 0):
+                raise ValueError(f"monitor fingerprint {key} is invalid")
+        if "error" in fingerprint and (not isinstance(fingerprint["error"], str) or not fingerprint["error"]):
+            raise ValueError("monitor fingerprint error is invalid")
+
+
+def _validate_event_specific(record: Mapping[str, Any]) -> None:
+    event = record["event"]
+    if event == "STARTED":
+        policy = record["policy"]
+        if not isinstance(policy, dict) or policy != asdict(PRODUCTION_POLICY):
+            raise ValueError("monitor STARTED policy is invalid")
+        _validate_fingerprints(record["fingerprints"], allow_empty=False)
+    elif event == "STATUS_CHECK":
+        returncode = record["returncode"]
+        if returncode is not None and (isinstance(returncode, bool) or not isinstance(returncode, int)):
+            raise ValueError("monitor STATUS_CHECK returncode is invalid")
+        _validate_fingerprints(record["fingerprints"], allow_empty=False)
+        errors = record["watch_errors"]
+        if not isinstance(errors, list) or any(
+            not isinstance(item, dict) or set(item) != {"path", "error"}
+            or not all(isinstance(item[key], str) and item[key] for key in ("path", "error"))
+            for item in errors
+        ):
+            raise ValueError("monitor STATUS_CHECK watch_errors are invalid")
+    elif event == "PROGRESS":
+        _validate_fingerprints(record["fingerprints"], allow_empty=False)
+    elif event == "STALL_WARNING":
+        if record["stall_seconds"] != PRODUCTION_POLICY.stall_seconds:
+            raise ValueError("monitor STALL_WARNING threshold is invalid")
+        _validate_fingerprints(record["fingerprints"], allow_empty=False)
+    elif event == "FATAL_PATTERN":
+        if record["pattern"] not in FATAL_PATTERNS or not isinstance(record["path"], str) or not record["path"]:
+            raise ValueError("monitor FATAL_PATTERN fields are invalid")
+    elif event in {"COMPLETED", "CRASHED"}:
+        if isinstance(record["returncode"], bool) or not isinstance(record["returncode"], int):
+            raise ValueError(f"monitor {event} returncode is invalid")
+        if "failure_stage" in record and (
+            not isinstance(record["failure_stage"], str) or not record["failure_stage"]
+            or not isinstance(record["error_type"], str) or not record["error_type"]
+        ):
+            raise ValueError("monitor CRASHED launch fields are invalid")
+    elif event == "HARD_TIMEOUT" and record["timeout_seconds"] != PRODUCTION_POLICY.hard_timeout_seconds:
+        raise ValueError("monitor HARD_TIMEOUT threshold is invalid")
+
+
+def validate_monitor_jsonl(
+    path: str | Path,
+    *,
+    expected_command: Sequence[str],
+    expected_cwd: str | Path,
+) -> dict[str, Any]:
+    """Validate successful monitor evidence against the producer's exact schema."""
+    records: list[dict[str, Any]] = []
+    try:
+        lines = Path(path).read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as error:
+        raise ValueError(f"monitor evidence is unreadable: {path}") from error
+    if not lines or any(not line for line in lines):
+        raise ValueError("monitor evidence is empty or contains blank records")
+
+    def reject_constant(value: str) -> None:
+        raise ValueError(f"non-finite monitor JSON constant: {value}")
+
+    for line_number, line in enumerate(lines, 1):
+        try:
+            record = json.loads(line, parse_constant=reject_constant)
+        except json.JSONDecodeError as error:
+            raise ValueError(f"malformed monitor JSONL at line {line_number}") from error
+        if not isinstance(record, dict):
+            raise ValueError(f"monitor line {line_number} must be an object")
+        _reject_nonfinite(record, label=f"line[{line_number}]")
+        event = record.get("event")
+        schemas = _EVENT_KEYS.get(event)
+        if schemas is None or set(record) not in schemas:
+            raise ValueError(f"monitor event schema is invalid for {event!r}")
+        timestamp = record.get("timestamp")
+        if not isinstance(timestamp, str):
+            raise ValueError("monitor timestamp must be a timezone-aware ISO string")
+        try:
+            parsed_timestamp = datetime.fromisoformat(timestamp)
+        except ValueError as error:
+            raise ValueError("monitor timestamp is invalid") from error
+        if parsed_timestamp.tzinfo is None:
+            raise ValueError("monitor timestamp must include a timezone")
+        elapsed = record.get("elapsed_seconds")
+        if isinstance(elapsed, bool) or not isinstance(elapsed, Real) or elapsed < 0:
+            raise ValueError("monitor elapsed_seconds is invalid")
+        if _normalized_command(record.get("command")) != _normalized_command(expected_command):
+            raise ValueError("monitor command does not bind the expected child argv")
+        cwd = record.get("cwd")
+        if not isinstance(cwd, str) or Path(cwd).resolve() != Path(expected_cwd).resolve():
+            raise ValueError("monitor cwd does not bind the expected repository")
+        _validate_event_specific(record)
+        records.append(record)
+    if records[0]["event"] != "STARTED" or records[-1]["event"] != "COMPLETED":
+        raise ValueError("monitor evidence must start with STARTED and end with COMPLETED")
+    if not any(record["event"] == "STATUS_CHECK" for record in records):
+        raise ValueError("monitor evidence requires at least one STATUS_CHECK")
+    if any(record["event"] in _FAILED_SUCCESS_EVENTS for record in records):
+        raise ValueError("successful monitor evidence contains a failure event")
+    if records[-1].get("returncode") != 0:
+        raise ValueError("monitor COMPLETED returncode must equal zero")
+    previous_time: datetime | None = None
+    previous_elapsed = -1.0
+    for record in records:
+        parsed = datetime.fromisoformat(record["timestamp"])
+        if previous_time is not None and parsed < previous_time:
+            raise ValueError("monitor timestamps are out of order")
+        if float(record["elapsed_seconds"]) < previous_elapsed:
+            raise ValueError("monitor elapsed_seconds are out of order")
+        previous_time = parsed
+        previous_elapsed = float(record["elapsed_seconds"])
+    return {"schema_version": "stage2_monitor_evidence_v1", "state": "pass", "events": len(records)}
 
 
 FATAL_PATTERNS = {
@@ -177,6 +350,7 @@ def monitor_command(
     watched_paths: Iterable[str | Path],
     policy: MonitorPolicy = PRODUCTION_POLICY,
     clock: Callable[[], float] = time.monotonic,
+    wall_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     sleep: Callable[[float], None] = time.sleep,
     popen_factory: Callable[..., object] = subprocess.Popen,
 ) -> int:
@@ -215,9 +389,12 @@ def monitor_command(
 
     def emit(event: str, now: float, **details: object) -> None:
         elapsed_seconds = now - started_at
+        emitted_at = wall_clock()
+        if not isinstance(emitted_at, datetime) or emitted_at.tzinfo is None:
+            raise ValueError("wall_clock must return a timezone-aware datetime")
         record = {
             "event": event,
-            "timestamp": now,
+            "timestamp": emitted_at.isoformat(),
             "elapsed_seconds": elapsed_seconds,
             "command": argv,
             "cwd": working_directory,

@@ -1,5 +1,6 @@
 import json
 import math
+from datetime import datetime
 import subprocess
 import sys
 import tempfile
@@ -118,6 +119,72 @@ class Stage2MonitoringTest(unittest.TestCase):
             {"check_interval_seconds": 300, "stall_seconds": 3600, "hard_timeout_seconds": 43200},
             self._records()[0]["policy"],
         )
+
+    def test_production_monitor_validator_accepts_real_primary_and_repeat_command_records(self):
+        from canonical.monitoring import validate_monitor_jsonl
+        from run_stage2_smoke import _command_record
+
+        for mode, tags in (
+            ("primary", ("standard_lora", "full_sr", "class_prior_reweight")),
+            ("repeat_full_sr", ("full_sr",)),
+        ):
+            with self.subTest(mode=mode):
+                events = self.root / f"{mode}.jsonl"
+                output = self.root / mode
+                argv = [
+                    sys.executable,
+                    str((ROOT / "run_stage2_smoke.py").resolve()),
+                    "--mode", mode,
+                    "--environment", "colab_a100",
+                    "--protocol", str((ROOT / "docs/paper_rebuild/FROZEN_EXPERIMENT_PROTOCOL.md").resolve()),
+                    "--output-dir", str(output.resolve()),
+                    "--fresh",
+                ]
+                command_record = _command_record(
+                    mode=mode, environment="colab_a100", argv=argv,
+                    condition_tags=tags, gpu_name="NVIDIA A100-SXM4-40GB",
+                )
+                process = FakeProcess(exit_after_checks=1)
+                result = monitor_command(
+                    command_record["argv"], cwd=ROOT, events_path=events,
+                    watched_paths=[output], policy=PRODUCTION_POLICY,
+                    clock=FakeClock(), sleep=lambda _seconds: None,
+                    popen_factory=lambda *args, **kwargs: process,
+                )
+                self.assertEqual(0, result)
+                report = validate_monitor_jsonl(
+                    events, expected_command=command_record["argv"], expected_cwd=ROOT,
+                )
+                self.assertEqual("pass", report["state"])
+                records = [json.loads(line) for line in events.read_text(encoding="utf-8").splitlines()]
+                self.assertEqual(["STARTED", "STATUS_CHECK", "COMPLETED"], [record["event"] for record in records])
+                self.assertTrue(all("T" in record["timestamp"] for record in records))
+
+    def test_production_monitor_validator_rejects_missing_status_wrong_fields_nonfinite_and_command_mismatch(self):
+        from canonical.monitoring import validate_monitor_jsonl
+
+        process = FakeProcess(exit_after_checks=1)
+        self._run(process, policy=PRODUCTION_POLICY)
+        original = self.events.read_text(encoding="utf-8")
+        records = [json.loads(line) for line in original.splitlines()]
+
+        self.events.write_text("\n".join(json.dumps(record) for record in (records[0], records[-1])) + "\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "STATUS_CHECK"):
+            validate_monitor_jsonl(self.events, expected_command=self.command, expected_cwd=self.root)
+
+        wrong = [dict(record) for record in records]
+        wrong[1]["changes"] = wrong[1].pop("fingerprints")
+        self.events.write_text("\n".join(json.dumps(record) for record in wrong) + "\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "schema"):
+            validate_monitor_jsonl(self.events, expected_command=self.command, expected_cwd=self.root)
+
+        self.events.write_text(original.replace('"elapsed_seconds": 0.0', '"elapsed_seconds": NaN', 1), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "non-finite"):
+            validate_monitor_jsonl(self.events, expected_command=self.command, expected_cwd=self.root)
+
+        self.events.write_text(original, encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "command"):
+            validate_monitor_jsonl(self.events, expected_command=["different"], expected_cwd=self.root)
 
     def test_completion_mirrors_child_return_code_and_never_uses_shell(self):
         process = FakeProcess(exit_after_checks=1, exit_code=7)
@@ -374,9 +441,9 @@ class Stage2MonitoringTest(unittest.TestCase):
         for record in records:
             self.assertEqual(record["command"], self.command)
             self.assertEqual(record["cwd"], str(self.root))
-            self.assertIsInstance(record["timestamp"], (int, float))
+            self.assertIsInstance(record["timestamp"], str)
+            self.assertIsNotNone(datetime.fromisoformat(record["timestamp"]).tzinfo)
             self.assertIsInstance(record["elapsed_seconds"], (int, float))
-            self.assertTrue(math.isfinite(record["timestamp"]))
             self.assertTrue(math.isfinite(record["elapsed_seconds"]))
 
     def test_monitor_preflight_keeps_documented_fresh_output_root_absent(self):
@@ -475,27 +542,22 @@ class Stage2MonitoringTest(unittest.TestCase):
         self.assertNotIn(str(evidence), received["command"])
 
     def test_task7_runtime_ignore_and_evidence_archive_are_scoped_to_task7(self):
-        gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
-        plan = (
-            ROOT / "docs" / "superpowers" / "plans" / "2026-08-08-stage2-smoke-environment-freeze.md"
-        ).read_text(encoding="utf-8")
-        task7 = _task_section(plan, "Task 7:", "Task 8:")
+        from canonical.stage2_contract import EVIDENCE_ARCHIVE_NAME, MONITOR_PATHS, NOTEBOOK_PATH
 
+        gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
         self.assertIn("ties_results/.stage2_monitor/", gitignore)
-        self.assertIn("ties_results/.stage2_monitor/", task7)
-        self.assertIn("evidence archive", task7)
-        self.assertIn("sibling `ties_results/.stage2_monitor/` JSONL monitor evidence", task7)
+        self.assertEqual("notebooks/stage2_colab_a100_smoke.ipynb", NOTEBOOK_PATH)
+        self.assertEqual("stage2_a100_evidence.zip", EVIDENCE_ARCHIVE_NAME)
+        self.assertEqual(2, len(MONITOR_PATHS))
+        self.assertTrue(all(path.startswith("ties_results/.stage2_monitor/") for path in MONITOR_PATHS.values()))
 
     def test_task9_import_contract_names_both_sibling_a100_event_files(self):
-        plan = (
-            ROOT / "docs" / "superpowers" / "plans" / "2026-08-08-stage2-smoke-environment-freeze.md"
-        ).read_text(encoding="utf-8")
-        task9 = _task_section(plan, "Task 9:", "Task 10:")
+        from canonical.stage2_contract import EVIDENCE_MEMBER_ROOT, MONITOR_PATHS, SAFE_EXTRACT_ROOT
 
-        self.assertIn("colab_a100_run1.events.jsonl", task9)
-        self.assertIn("colab_a100_repeat_full_sr.events.jsonl", task9)
-        self.assertIn("extract it at the repository root", task9)
-        self.assertIn("Do not extract only under `ties_results/stage2_smoke/`", task9)
+        self.assertEqual("ties_results", EVIDENCE_MEMBER_ROOT)
+        self.assertEqual(".", SAFE_EXTRACT_ROOT)
+        self.assertEqual("ties_results/.stage2_monitor/colab_a100_run1.events.jsonl", MONITOR_PATHS["primary"])
+        self.assertEqual("ties_results/.stage2_monitor/colab_a100_repeat_full_sr.events.jsonl", MONITOR_PATHS["repeat_full_sr"])
 
     def test_task_handoff_section_extractor_rejects_sibling_words_in_another_task(self):
         fallback_plan = """

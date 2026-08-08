@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import math
 import os
 from pathlib import Path, PurePosixPath
 import tempfile
@@ -15,22 +14,25 @@ from canonical.freeze import (
     _commands, _manifest_commits, _safe_relative, _strict_environment, _strict_json,
     verify_freeze_bundle,
 )
-from canonical.stage2_validation import compare_a100_repeat, validate_smoke_root
+from canonical.monitoring import validate_monitor_jsonl
+from canonical.stage2_contract import (
+    EVIDENCE_INVENTORY_MEMBER, EXPECTATIONS_MEMBER, FREEZE_ROOT, METHOD_OUTPUTS,
+    MONITOR_PATHS, OMITTED_WEIGHT_PATHS, PRIMARY_CONDITIONS, PRIMARY_ROOT,
+    REPEAT_CONDITIONS, REPEAT_ROOT, SHARED_OUTPUTS, STAGE2_SEED,
+)
+from canonical.stage2_validation import (
+    compare_a100_repeat, render_validation_markdown, validate_smoke_root,
+    validation_report_semantics,
+)
 
 
-INVENTORY_MEMBER = "ties_results/stage2_smoke/stage2_evidence_inventory.json"
-_PRIMARY = "ties_results/stage2_smoke/colab_a100_run1"
-_REPEAT = "ties_results/stage2_smoke/colab_a100_repeat_full_sr"
-_FREEZE = "ties_results/stage2_smoke/freeze_bundle"
-_EXPECTATIONS = "ties_results/stage2_smoke/source_expectations.json"
-_MONITORS = {
-    "primary": "ties_results/.stage2_monitor/colab_a100_run1.events.jsonl",
-    "repeat_full_sr": "ties_results/.stage2_monitor/colab_a100_repeat_full_sr.events.jsonl",
-}
+INVENTORY_MEMBER = EVIDENCE_INVENTORY_MEMBER
+_PRIMARY = PRIMARY_ROOT
+_REPEAT = REPEAT_ROOT
+_FREEZE = FREEZE_ROOT
+_EXPECTATIONS = EXPECTATIONS_MEMBER
+_MONITORS = MONITOR_PATHS
 _WEIGHT_SUFFIXES = {".pt", ".pth", ".ckpt", ".bin", ".safetensors"}
-_FAILED_EVENTS = {"CRASHED", "HARD_TIMEOUT", "FATAL_PATTERN"}
-_ALLOWED_EVENTS = {"STARTED", "STATUS_CHECK", "PROGRESS", "STALL_WARNING", "COMPLETED"}
-_POLICY = {"check_interval_seconds": 300, "stall_seconds": 3600, "hard_timeout_seconds": 43200}
 
 
 def _is_sha256(value: Any) -> bool:
@@ -64,64 +66,13 @@ def _zip_symlink(info: zipfile.ZipInfo) -> bool:
     return ((info.external_attr >> 16) & 0o170000) == 0o120000
 
 
-def validate_monitor_evidence(path: Path, *, expected_command: list[str]) -> dict[str, Any]:
-    """Validate the frozen production-monitor JSONL contract."""
-    path = Path(path)
-    if not isinstance(expected_command, list) or not expected_command or not all(isinstance(item, str) and item for item in expected_command):
-        raise ValueError("monitor expected command is invalid")
-    records: list[dict[str, Any]] = []
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeError) as error:
-        raise ValueError(f"monitor evidence is unreadable: {path}") from error
-    if not lines:
-        raise ValueError("monitor evidence is empty")
-    for line_number, line in enumerate(lines, 1):
-        if not line:
-            raise ValueError(f"monitor evidence contains an empty record at line {line_number}")
-        record = _strict_json_bytes(line.encode("utf-8"), label=f"monitor line {line_number}")
-        event = record.get("event")
-        if event in _FAILED_EVENTS:
-            raise ValueError(f"monitor evidence records terminal failure {event}")
-        if event not in _ALLOWED_EVENTS:
-            raise ValueError(f"monitor evidence event is invalid: {event!r}")
-        for field in ("timestamp", "elapsed_seconds"):
-            value = record.get(field)
-            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)) or value < 0:
-                raise ValueError(f"monitor {field} is invalid")
-        if record.get("command") != expected_command:
-            raise ValueError("monitor command does not bind commands.json")
-        cwd = record.get("cwd")
-        if not isinstance(cwd, str) or not cwd or not Path(cwd).is_absolute():
-            raise ValueError("monitor cwd must be absolute")
-        records.append(record)
-    if records[0].get("event") != "STARTED" or records[0].get("policy") != _POLICY:
-        raise ValueError("monitor STARTED policy is not the frozen production policy")
-    if records[-1].get("event") != "COMPLETED" or records[-1].get("returncode") != 0:
-        raise ValueError("monitor must end with successful COMPLETED")
-    cwd = records[0]["cwd"]
-    if any(record["cwd"] != cwd for record in records):
-        raise ValueError("monitor cwd changed during execution")
-    for previous, current in zip(records, records[1:]):
-        if current["timestamp"] < previous["timestamp"] or current["elapsed_seconds"] < previous["elapsed_seconds"]:
-            raise ValueError("monitor timestamps/elapsed_seconds are out of order")
-    return {"state": "pass", "events": len(records), "cwd": cwd}
-
-
-def _run_matrix(root: Path) -> tuple[list[int], dict[str, list[str]]]:
-    matrix = _strict_json(root / "manifests" / "run_matrix.json")
-    seeds, orders = matrix.get("training_seeds"), matrix.get("condition_orders")
-    if not isinstance(seeds, list) or not seeds or not all(isinstance(seed, int) for seed in seeds) or not isinstance(orders, dict):
-        raise ValueError("evidence run matrix is invalid")
-    normalized: dict[str, list[str]] = {}
-    for seed in seeds:
-        order = orders.get(str(seed))
-        if not isinstance(order, list) or not order or not all(isinstance(tag, str) and tag for tag in order):
-            raise ValueError("evidence condition matrix is invalid")
-        normalized[str(seed)] = order
-    if set(orders) != set(normalized):
-        raise ValueError("evidence condition matrix contains unexpected seeds")
-    return seeds, normalized
+def validate_monitor_evidence(
+    path: Path, *, expected_command: list[str], expected_cwd: Path | None = None,
+) -> dict[str, Any]:
+    """Compatibility wrapper around the producer-owned monitor validator."""
+    if expected_cwd is None:
+        expected_cwd = Path(expected_command[1]).resolve().parent
+    return validate_monitor_jsonl(path, expected_command=expected_command, expected_cwd=expected_cwd)
 
 
 def _global_run_files(root_rel: str) -> set[str]:
@@ -138,64 +89,60 @@ def _global_run_files(root_rel: str) -> set[str]:
     }
 
 
-def _derive_run_evidence(repo_root: Path, root_rel: str, *, weights_may_be_omitted: bool = False) -> tuple[set[str], list[dict[str, str]]]:
+def _derive_run_evidence(repo_root: Path, root_rel: str, *, role: str, weights_may_be_omitted: bool = False) -> tuple[set[str], list[dict[str, str]]]:
     root = repo_root / PurePosixPath(root_rel)
     required = _global_run_files(root_rel)
     omitted: list[dict[str, str]] = []
-    seeds, orders = _run_matrix(root)
-    for seed in seeds:
-        for tag in ["shared_phase2", *orders[str(seed)]]:
-            directory = root / f"seed_{seed}" / tag
-            status = _strict_json(directory / "status.json")
-            status_keys = {
-                "schema_version", "state", "started_at", "finished_at", "wall_time_seconds",
-                "exit_status", "peak_gpu_memory_bytes", "error_type", "error", "output_hashes",
-            }
-            wall_time = status.get("wall_time_seconds")
-            peak = status.get("peak_gpu_memory_bytes")
-            if (
-                set(status) != status_keys
-                or status.get("schema_version") != "canonical_status_v1"
-                or status.get("state") != "success"
-                or not isinstance(status.get("started_at"), str) or not status["started_at"]
-                or not isinstance(status.get("finished_at"), str) or not status["finished_at"]
-                or isinstance(wall_time, bool) or not isinstance(wall_time, (int, float)) or not math.isfinite(float(wall_time)) or wall_time < 0
-                or status.get("exit_status") != 0
-                or not (peak is None or (isinstance(peak, int) and not isinstance(peak, bool) and peak >= 0))
-                or status.get("error_type") is not None or status.get("error") is not None
-                or not isinstance(status.get("output_hashes"), dict)
-            ):
-                raise ValueError(f"evidence status is invalid: {directory}")
-            prefix = f"{root_rel}/seed_{seed}/{tag}"
-            required.add(f"{prefix}/status.json")
-            for relative, expected_hash in status["output_hashes"].items():
-                if not isinstance(relative, str) or not _safe_relative(relative) or not _is_sha256(expected_hash):
-                    raise ValueError(f"evidence status contains unsafe output metadata: {relative!r}")
-                full = f"{prefix}/{relative}"
-                if PurePosixPath(relative).suffix.casefold() in _WEIGHT_SUFFIXES:
-                    artifact = directory / PurePosixPath(relative)
-                    if not weights_may_be_omitted and (not artifact.is_file() or artifact.is_symlink() or sha256_file(artifact) != expected_hash):
-                        raise ValueError(f"evidence status artifact hash mismatch: {artifact}")
-                    omitted.append({"path": full, "sha256": expected_hash, "reason": "model_weight_excluded"})
-                else:
-                    artifact = directory / PurePosixPath(relative)
-                    if not artifact.is_file() or artifact.is_symlink() or sha256_file(artifact) != expected_hash:
-                        raise ValueError(f"evidence status artifact hash mismatch: {artifact}")
-                    required.add(full)
+    conditions = PRIMARY_CONDITIONS if role == "primary" else REPEAT_CONDITIONS
+    expected_tags = ("shared_phase2", *conditions)
+    matrix = _strict_json(root / "manifests" / "run_matrix.json")
+    if matrix.get("training_seeds") != [STAGE2_SEED] or set(matrix.get("condition_orders", {})) != {str(STAGE2_SEED)} or set(matrix["condition_orders"][str(STAGE2_SEED)]) != set(conditions) or len(matrix["condition_orders"][str(STAGE2_SEED)]) != len(conditions):
+        raise ValueError("evidence run matrix does not match the fixed Stage-2 contract")
+    for tag in expected_tags:
+        directory = root / f"seed_{STAGE2_SEED}" / tag
+        status = _strict_json(directory / "status.json")
+        hashes = status.get("output_hashes")
+        expected_outputs = (*SHARED_OUTPUTS, "checkpoints/shared.pt") if tag == "shared_phase2" else METHOD_OUTPUTS
+        if status.get("schema_version") != "canonical_status_v1" or status.get("state") != "success" or not isinstance(hashes, dict) or set(hashes) != set(expected_outputs):
+            raise ValueError(f"evidence status outputs do not match the fixed runner contract: {directory}")
+        prefix = f"{root_rel}/seed_{STAGE2_SEED}/{tag}"
+        required.add(f"{prefix}/status.json")
+        for relative in expected_outputs:
+            expected_hash = hashes[relative]
+            if not _is_sha256(expected_hash):
+                raise ValueError(f"evidence status contains an invalid hash: {relative}")
+            full = f"{prefix}/{relative}"
+            artifact = directory / PurePosixPath(relative)
+            if relative == "checkpoints/shared.pt":
+                expected_omitted = OMITTED_WEIGHT_PATHS[role]
+                if full != expected_omitted:
+                    raise ValueError("shared checkpoint omission path is not fixed")
+                if not weights_may_be_omitted and (not artifact.is_file() or artifact.is_symlink() or sha256_file(artifact) != expected_hash):
+                    raise ValueError(f"evidence shared checkpoint hash mismatch: {artifact}")
+                if weights_may_be_omitted and artifact.exists():
+                    raise ValueError("transport unexpectedly contains an omitted checkpoint")
+                omitted.append({"path": full, "sha256": expected_hash, "reason": "model_weight_excluded"})
+            else:
+                if not artifact.is_file() or artifact.is_symlink() or sha256_file(artifact) != expected_hash:
+                    raise ValueError(f"evidence status artifact hash mismatch: {artifact}")
+                required.add(full)
     return required, omitted
 
 
 def _validate_omitted_metadata(repo_root: Path, omitted: list[dict[str, str]]) -> None:
     omitted_map = {entry["path"]: entry["sha256"] for entry in omitted}
-    if len(omitted_map) != len(omitted) or not omitted:
-        raise ValueError("omitted weight inventory is empty or duplicated")
-    for root_rel in (_PRIMARY, _REPEAT):
-        shared_rel = f"{root_rel}/seed_42/shared_phase2"
+    if set(omitted_map) != set(OMITTED_WEIGHT_PATHS.values()) or len(omitted) != 2:
+        raise ValueError("omitted_weights must be exactly the two fixed shared checkpoints")
+    for role, root_rel, conditions in (
+        ("primary", _PRIMARY, PRIMARY_CONDITIONS),
+        ("repeat_full_sr", _REPEAT, REPEAT_CONDITIONS),
+    ):
+        shared_rel = f"{root_rel}/seed_{STAGE2_SEED}/shared_phase2"
         checkpoint = _strict_json(repo_root / shared_rel / "shared_checkpoint.json")
         metadata = _strict_json(repo_root / shared_rel / "shared_checkpoint_metadata.json")
-        relative = checkpoint.get("path_relative")
-        if not isinstance(relative, str) or not _safe_relative(relative):
-            raise ValueError("shared checkpoint metadata path is unsafe")
+        relative = "checkpoints/shared.pt"
+        if checkpoint.get("path_relative") != relative:
+            raise ValueError("shared checkpoint reference path is not fixed")
         full = f"{shared_rel}/{relative}"
         expected = omitted_map.get(full)
         if expected is None or checkpoint.get("sha256") != expected or metadata.get("checkpoint_sha256") != expected:
@@ -204,11 +151,23 @@ def _validate_omitted_metadata(repo_root: Path, omitted: list[dict[str, str]]) -
         normalized_recorded = recorded_path.replace("\\", "/") if isinstance(recorded_path, str) else ""
         if not normalized_recorded.endswith("/" + full):
             raise ValueError("shared checkpoint metadata path is inconsistent")
+        status = _strict_json(repo_root / shared_rel / "status.json")
+        if status.get("output_hashes", {}).get(relative) != expected:
+            raise ValueError("omitted weight does not bind shared status")
+        shared_manifest = _strict_json(repo_root / shared_rel / "run_manifest.json")
+        if shared_manifest.get("result", {}).get("checkpoint_sha256") != expected:
+            raise ValueError("omitted weight does not bind shared run manifest")
+        expected_branch = {"path": recorded_path, "sha256": expected}
+        seed_root = repo_root / root_rel / f"seed_{STAGE2_SEED}"
+        for method in conditions:
+            branch = _strict_json(seed_root / method / "run_manifest.json").get("shared_phase2_checkpoint")
+            if (method == "standard_lora" and branch is not None) or (method != "standard_lora" and branch != expected_branch):
+                raise ValueError("omitted weight does not bind every branch manifest")
 
 
 def _derive_required(repo_root: Path, *, weights_may_be_omitted: bool = False) -> tuple[set[str], list[dict[str, str]]]:
-    primary_files, primary_omitted = _derive_run_evidence(repo_root, _PRIMARY, weights_may_be_omitted=weights_may_be_omitted)
-    repeat_files, repeat_omitted = _derive_run_evidence(repo_root, _REPEAT, weights_may_be_omitted=weights_may_be_omitted)
+    primary_files, primary_omitted = _derive_run_evidence(repo_root, _PRIMARY, role="primary", weights_may_be_omitted=weights_may_be_omitted)
+    repeat_files, repeat_omitted = _derive_run_evidence(repo_root, _REPEAT, role="repeat_full_sr", weights_may_be_omitted=weights_may_be_omitted)
     freeze_root = repo_root / PurePosixPath(_FREEZE)
     freeze_inventory = _strict_json(freeze_root / "checksum_inventory.json")
     if freeze_inventory.get("schema_version") != "stage2_freeze_inventory_v1" or not isinstance(freeze_inventory.get("files"), dict):
@@ -218,20 +177,6 @@ def _derive_required(repo_root: Path, *, weights_may_be_omitted: bool = False) -
     omitted = sorted(primary_omitted + repeat_omitted, key=lambda item: item["path"])
     _validate_omitted_metadata(repo_root, omitted)
     return required, omitted
-
-
-def _stored_validation(root: Path, *, expected_conditions: list[str], comparison: dict[str, Any] | None) -> None:
-    report = _strict_json(root / "stage2_validation.json")
-    if report.get("schema_version") != "stage2_validation_v1" or report.get("state") != "pass":
-        raise ValueError("stored Stage-2 validation output is not successful")
-    if comparison is not None and report.get("repeat_comparison") != comparison:
-        raise ValueError("stored primary validation does not bind repeat comparison")
-    matrix_conditions = _run_matrix(root)[1].get("42")
-    if matrix_conditions != expected_conditions:
-        raise ValueError("stored validation condition matrix is inconsistent")
-    markdown = (root / "stage2_validation.md").read_text(encoding="utf-8")
-    if "pass" not in markdown.casefold():
-        raise ValueError("stored Stage-2 validation markdown is not successful")
 
 
 def _verify_transport_tree(repo_root: Path, inventory: dict[str, Any]) -> tuple[set[str], list[dict[str, str]]]:
@@ -257,16 +202,42 @@ def _verify_transport_tree(repo_root: Path, inventory: dict[str, Any]) -> tuple[
     frozen_protocol = freeze / "protocol_snapshot" / "FROZEN_EXPERIMENT_PROTOCOL.md"
     if any((run / "protocol_snapshot" / "FROZEN_EXPERIMENT_PROTOCOL.md").read_bytes() != frozen_protocol.read_bytes() for run in (primary, repeat)):
         raise ValueError("transported run protocol differs from frozen protocol")
-    comparison = _strict_json(primary / "stage2_validation.json").get("repeat_comparison")
-    if not isinstance(comparison, dict) or comparison.get("schema_version") != "stage2_a100_repeat_comparison_v1" or comparison.get("state") != "pass":
-        raise ValueError("stored A100 repeat comparison is invalid")
-    _stored_validation(primary, expected_conditions=["standard_lora", "full_sr", "class_prior_reweight"], comparison=comparison)
-    _stored_validation(repeat, expected_conditions=["full_sr"], comparison=None)
-    validate_monitor_evidence(repo_root / PurePosixPath(_MONITORS["primary"]), expected_command=primary_commands.get("argv"))
-    validate_monitor_evidence(repo_root / PurePosixPath(_MONITORS["repeat_full_sr"]), expected_command=repeat_commands.get("argv"))
     required, omitted = _derive_required(repo_root, weights_may_be_omitted=True)
     if omitted != inventory.get("omitted_weights"):
         raise ValueError("evidence omitted_weights do not bind status/checkpoint metadata")
+    omitted_map = {entry["path"]: entry["sha256"] for entry in omitted}
+    primary_omitted = {path.removeprefix(_PRIMARY + "/"): digest for path, digest in omitted_map.items() if path.startswith(_PRIMARY + "/")}
+    repeat_omitted = {path.removeprefix(_REPEAT + "/"): digest for path, digest in omitted_map.items() if path.startswith(_REPEAT + "/")}
+    canonical_dir = repo_root / "ties_results" / "canonical_v1"
+    primary_report = validate_smoke_root(
+        primary, expected_conditions=PRIMARY_CONDITIONS, canonical_dir=canonical_dir,
+        omitted_weights=primary_omitted,
+    )
+    repeat_report = validate_smoke_root(
+        repeat, expected_conditions=REPEAT_CONDITIONS, canonical_dir=canonical_dir,
+        omitted_weights=repeat_omitted,
+    )
+    comparison = compare_a100_repeat(
+        primary, repeat, canonical_dir=canonical_dir,
+        primary_omitted_weights=primary_omitted,
+        repeat_omitted_weights=repeat_omitted,
+    )
+    recomputed_primary = dict(primary_report)
+    recomputed_primary["repeat_comparison"] = comparison
+    stored_primary = _strict_json(primary / "stage2_validation.json")
+    stored_repeat = _strict_json(repeat / "stage2_validation.json")
+    if validation_report_semantics(stored_primary) != validation_report_semantics(recomputed_primary) or validation_report_semantics(stored_repeat) != validation_report_semantics(repeat_report):
+        raise ValueError("stored validation JSON semantics differ from weight-optional recomputation")
+    if (primary / "stage2_validation.md").read_text(encoding="utf-8") != render_validation_markdown(recomputed_primary) or (repeat / "stage2_validation.md").read_text(encoding="utf-8") != render_validation_markdown(repeat_report):
+        raise ValueError("stored validation Markdown differs from weight-optional recomputation")
+    validate_monitor_evidence(
+        repo_root / PurePosixPath(_MONITORS["primary"]),
+        expected_command=primary_commands["argv"], expected_cwd=Path(primary_commands["argv"][1]).parent,
+    )
+    validate_monitor_evidence(
+        repo_root / PurePosixPath(_MONITORS["repeat_full_sr"]),
+        expected_command=repeat_commands["argv"], expected_cwd=Path(repeat_commands["argv"][1]).parent,
+    )
     frozen = _strict_json(repo_root / PurePosixPath(_FREEZE) / "source_expectations.json")
     external = _strict_json(repo_root / PurePosixPath(_EXPECTATIONS))
     if external != frozen:
@@ -283,8 +254,8 @@ def build_evidence_archive(repo_root: Path, output_path: Path, *, expectations_p
         raise ValueError("evidence export requires source expectations")
     expectations_path = Path(expectations_path).resolve()
     primary, repeat = repo_root / PurePosixPath(_PRIMARY), repo_root / PurePosixPath(_REPEAT)
-    primary_report = validate_smoke_root(primary, expected_conditions=("standard_lora", "full_sr", "class_prior_reweight"), canonical_dir=repo_root / "ties_results" / "canonical_v1")
-    repeat_report = validate_smoke_root(repeat, expected_conditions=("full_sr",), canonical_dir=repo_root / "ties_results" / "canonical_v1")
+    primary_report = validate_smoke_root(primary, expected_conditions=PRIMARY_CONDITIONS, canonical_dir=repo_root / "ties_results" / "canonical_v1")
+    repeat_report = validate_smoke_root(repeat, expected_conditions=REPEAT_CONDITIONS, canonical_dir=repo_root / "ties_results" / "canonical_v1")
     comparison = compare_a100_repeat(primary, repeat, canonical_dir=repo_root / "ties_results" / "canonical_v1")
     if primary_report.get("state") != "pass" or repeat_report.get("state") != "pass" or comparison.get("state") != "pass":
         raise ValueError("evidence export requires successful production validation")
@@ -292,7 +263,7 @@ def build_evidence_archive(repo_root: Path, output_path: Path, *, expectations_p
     stored_repeat = _strict_json(repeat / "stage2_validation.json")
     recomputed_primary = dict(primary_report)
     recomputed_primary["repeat_comparison"] = comparison
-    if stored_primary != recomputed_primary or stored_repeat != repeat_report:
+    if stored_primary != recomputed_primary or stored_repeat != repeat_report or (primary / "stage2_validation.md").read_text(encoding="utf-8") != render_validation_markdown(recomputed_primary) or (repeat / "stage2_validation.md").read_text(encoding="utf-8") != render_validation_markdown(repeat_report):
         raise ValueError("stored Stage-2 validation output does not bind recomputed results")
     verify_freeze_bundle(repo_root / PurePosixPath(_FREEZE))
     frozen_expectations = _strict_json(repo_root / PurePosixPath(_FREEZE) / "source_expectations.json")
@@ -306,8 +277,8 @@ def build_evidence_archive(repo_root: Path, output_path: Path, *, expectations_p
     required, omitted = _derive_required(repo_root)
     primary_commands = _strict_json(primary / "commands.json")["argv"]
     repeat_commands = _strict_json(repeat / "commands.json")["argv"]
-    validate_monitor_evidence(repo_root / PurePosixPath(_MONITORS["primary"]), expected_command=primary_commands)
-    validate_monitor_evidence(repo_root / PurePosixPath(_MONITORS["repeat_full_sr"]), expected_command=repeat_commands)
+    validate_monitor_evidence(repo_root / PurePosixPath(_MONITORS["primary"]), expected_command=primary_commands, expected_cwd=Path(primary_commands[1]).parent)
+    validate_monitor_evidence(repo_root / PurePosixPath(_MONITORS["repeat_full_sr"]), expected_command=repeat_commands, expected_cwd=Path(repeat_commands[1]).parent)
     candidates: dict[str, Path] = {}
     ties_results = repo_root / "ties_results"
     for path in sorted(ties_results.rglob("*")):

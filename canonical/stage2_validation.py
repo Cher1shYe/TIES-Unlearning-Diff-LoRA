@@ -14,6 +14,7 @@ from typing import Any, Mapping, Sequence
 from canonical.artifacts import sha256_file
 from canonical.hans import aggregate_hans_predictions
 from canonical.runner import _METHOD_OUTPUTS, _SHARED_OUTPUTS
+from canonical.stage2_contract import STAGE2_SEED
 
 
 def _reject_json_constant(value: str) -> None:
@@ -65,7 +66,13 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
-def _check_success_status(directory: Path, *, required_outputs: Sequence[str]) -> None:
+def _check_success_status(
+    directory: Path,
+    *,
+    required_outputs: Sequence[str],
+    root: Path | None = None,
+    omitted_weights: Mapping[str, str] | None = None,
+) -> None:
     status_path = directory / "status.json"
     if not status_path.is_file():
         raise ValueError(f"missing status.json: {directory}")
@@ -85,10 +92,15 @@ def _check_success_status(directory: Path, *, required_outputs: Sequence[str]) -
         if not isinstance(relative, str) or not isinstance(expected_hash, str):
             raise ValueError(f"invalid output hash entry in {status_path}")
         path = (directory / relative).resolve()
-        if directory.resolve() not in path.parents or not path.is_file():
+        if directory.resolve() not in path.parents:
             raise ValueError(f"status references a missing or unsafe artifact: {relative}")
-        actual_hash = sha256_file(path)
-        if actual_hash != expected_hash:
+        omission_key = path.relative_to(Path(root).resolve()).as_posix() if root is not None else None
+        allowed_omission = omitted_weights is not None and omission_key in omitted_weights
+        if allowed_omission and omitted_weights[omission_key] != expected_hash:
+            raise ValueError(f"omitted weight hash does not match status: {relative}")
+        if not path.is_file() and not allowed_omission:
+            raise ValueError(f"status references a missing or unsafe artifact: {relative}")
+        if path.is_file() and sha256_file(path) != expected_hash:
             raise ValueError(f"artifact hash mismatch for {path}")
 
 
@@ -264,7 +276,14 @@ def _validate_method(
     _validate_method_audit(_read_jsonl(run_dir / "data_access.jsonl"), source=run_dir)
 
 
-def _validate_shared_checkpoint(seed_dir: Path, *, seed: int, common: Mapping[str, str]) -> tuple[dict[str, Any], dict[str, float]]:
+def _validate_shared_checkpoint(
+    root: Path,
+    seed_dir: Path,
+    *,
+    seed: int,
+    common: Mapping[str, str],
+    omitted_weights: Mapping[str, str] | None = None,
+) -> tuple[dict[str, Any], dict[str, float]]:
     shared_dir = seed_dir / "shared_phase2"
     reference = _read_json(shared_dir / "shared_checkpoint.json")
     relative = reference.get("path_relative")
@@ -272,7 +291,10 @@ def _validate_shared_checkpoint(seed_dir: Path, *, seed: int, common: Mapping[st
         raise ValueError(f"invalid shared checkpoint reference: {shared_dir}")
     if relative in _SHARED_OUTPUTS or Path(relative).is_absolute() or ".." in Path(relative).parts:
         raise ValueError(f"shared checkpoint path must be a distinct safe artifact: {shared_dir}")
-    _check_success_status(shared_dir, required_outputs=(*_SHARED_OUTPUTS, relative))
+    _check_success_status(
+        shared_dir, required_outputs=(*_SHARED_OUTPUTS, relative),
+        root=root, omitted_weights=omitted_weights,
+    )
     config = _read_json(shared_dir / "config.json")
     manifest = _read_json(shared_dir / "run_manifest.json")
     if manifest.get("role") != "shared_phase2" or manifest.get("training_seed") != seed:
@@ -287,13 +309,25 @@ def _validate_shared_checkpoint(seed_dir: Path, *, seed: int, common: Mapping[st
     if not isinstance(digest, str):
         raise ValueError(f"invalid shared checkpoint reference: {shared_dir}")
     checkpoint_path = (shared_dir / relative).resolve()
-    if shared_dir.resolve() not in checkpoint_path.parents or not checkpoint_path.is_file() or sha256_file(checkpoint_path) != digest:
+    omission_key = checkpoint_path.relative_to(root.resolve()).as_posix()
+    omitted_digest = omitted_weights.get(omission_key) if omitted_weights is not None else None
+    if shared_dir.resolve() not in checkpoint_path.parents or (
+        checkpoint_path.is_file() and sha256_file(checkpoint_path) != digest
+    ) or (not checkpoint_path.is_file() and omitted_digest != digest):
         raise ValueError(f"shared checkpoint hash mismatch: {shared_dir}")
     metadata = _read_json(shared_dir / "shared_checkpoint_metadata.json")
-    if metadata.get("checkpoint_sha256") != digest or Path(str(metadata.get("checkpoint_path"))).resolve() != checkpoint_path:
+    metadata_path = str(metadata.get("checkpoint_path"))
+    if omitted_digest is None:
+        metadata_path_matches = Path(metadata_path).resolve() == checkpoint_path
+        expected_path = str(checkpoint_path)
+    else:
+        normalized = metadata_path.replace("\\", "/")
+        metadata_path_matches = normalized.endswith(f"/{root.name}/{omission_key}")
+        expected_path = metadata_path
+    if metadata.get("checkpoint_sha256") != digest or not metadata_path_matches:
         raise ValueError(f"shared checkpoint metadata does not match reference: {shared_dir}")
     weights = _finite_positive_weights(metadata)
-    return {"path": str(checkpoint_path), "sha256": digest}, weights
+    return {"path": expected_path, "sha256": digest}, weights
 
 
 def _validate_class_prior_log(run_dir: Path, weights: Mapping[str, float]) -> None:
@@ -341,12 +375,18 @@ def validate_smoke_root(
     *,
     expected_conditions: Sequence[str],
     canonical_dir: Path,
+    omitted_weights: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Fail closed unless a Stage-2 smoke root is internally reproducible."""
     root = Path(root).resolve()
     conditions = tuple(expected_conditions)
     if not root.is_dir() or not conditions or len(set(conditions)) != len(conditions):
         raise ValueError("smoke root and unique expected conditions are required")
+    omissions = dict(omitted_weights or {})
+    if omissions:
+        expected_omission = f"seed_{STAGE2_SEED}/shared_phase2/checkpoints/shared.pt"
+        if set(omissions) != {expected_omission} or not isinstance(omissions[expected_omission], str) or re.fullmatch(r"[0-9a-f]{64}", omissions[expected_omission]) is None:
+            raise ValueError("weight-optional validation requires the exact shared checkpoint omission")
     common, _environment = _root_common(root)
     commands = _read_json(root / "commands.json")
     if commands.get("profile_name") != "stage2_smoke_v1":
@@ -361,6 +401,8 @@ def validate_smoke_root(
     seeds = matrix.get("training_seeds")
     if not isinstance(seeds, list) or not seeds:
         raise ValueError("run_matrix.json must record at least one training seed")
+    if omissions and seeds != [STAGE2_SEED]:
+        raise ValueError("weight-optional validation requires only Stage-2 seed 42")
     checks: dict[str, dict[str, Any]] = {}
     for seed in seeds:
         if not isinstance(seed, int) or isinstance(seed, bool):
@@ -369,7 +411,10 @@ def validate_smoke_root(
         if not isinstance(order, list) or set(order) != set(conditions) or len(order) != len(conditions):
             raise ValueError(f"run matrix condition order mismatch for seed {seed}")
         seed_dir = root / f"seed_{seed}"
-        expected_checkpoint, weights = _validate_shared_checkpoint(seed_dir, seed=seed, common=common)
+        expected_checkpoint, weights = _validate_shared_checkpoint(
+            root, seed_dir, seed=seed, common=common,
+            omitted_weights=omissions or None,
+        )
         for method in conditions:
             run_dir = seed_dir / method
             _validate_method(run_dir, method=method, seed=seed, common=common)
@@ -377,6 +422,8 @@ def validate_smoke_root(
                 branch = _read_json(run_dir / "run_manifest.json").get("shared_phase2_checkpoint")
                 if branch != expected_checkpoint:
                     raise ValueError(f"dual branch shared checkpoint mismatch: {run_dir}")
+            elif _read_json(run_dir / "run_manifest.json").get("shared_phase2_checkpoint") is not None:
+                raise ValueError(f"standard_lora must not bind the shared checkpoint: {run_dir}")
             if method == "class_prior_reweight":
                 _validate_class_prior_log(run_dir, weights)
     canonical_dir = Path(canonical_dir)
@@ -388,6 +435,27 @@ def validate_smoke_root(
     checks["shared_checkpoint"] = {"state": "pass"}
     checks["canonical_directory"] = {"state": "pass"}
     return {"schema_version": "stage2_validation_v1", "root": str(root), "state": "pass", "checks": checks}
+
+
+def validation_report_semantics(report: Mapping[str, Any]) -> dict[str, Any]:
+    """Return stable validation semantics, excluding only the extracted root path."""
+    if report.get("schema_version") != "stage2_validation_v1":
+        raise ValueError("validation report schema is invalid")
+    return {key: value for key, value in report.items() if key != "root"}
+
+
+def render_validation_markdown(report: Mapping[str, Any]) -> str:
+    """Render the canonical stored validation Markdown."""
+    semantics = validation_report_semantics(report)
+    checks = semantics.get("checks")
+    if not isinstance(checks, Mapping):
+        raise ValueError("validation report checks are invalid")
+    lines = ["# Stage 2 Smoke Validation", "", f"State: `{semantics['state']}`", "", "## Checks", ""]
+    lines.extend(f"- {name}: `{entry['state']}`" for name, entry in checks.items())
+    if "repeat_comparison" in semantics:
+        comparison = semantics["repeat_comparison"]
+        lines.extend(["", "## A100 Repeat", "", f"State: `{comparison['state']}`"])
+    return "\n".join(lines) + "\n"
 
 
 def _metric_number(value: float, *, name: str) -> Decimal:
@@ -451,7 +519,10 @@ def _repeat_full_sr(root: Path) -> tuple[Mapping[str, Any], Mapping[str, Any], M
     return provenance, hans, mnli, commands
 
 
-def _validate_a100_root_identity(root: Path, *, mode: str, conditions: Sequence[str], canonical_dir: Path | None = None) -> None:
+def _validate_a100_root_identity(
+    root: Path, *, mode: str, conditions: Sequence[str], canonical_dir: Path | None = None,
+    omitted_weights: Mapping[str, str] | None = None,
+) -> None:
     commands = _read_json(root / "commands.json")
     if commands.get("mode") != mode:
         raise ValueError(f"A100 smoke mode must be {mode}")
@@ -465,15 +536,26 @@ def _validate_a100_root_identity(root: Path, *, mode: str, conditions: Sequence[
     if not isinstance(gpu, str) or "A100" not in gpu or environment.get("gpu") != gpu:
         raise ValueError("A100 gpu evidence is missing or inconsistent")
     canonical_dir = Path("ties_results/canonical_v1") if canonical_dir is None else Path(canonical_dir)
-    validate_smoke_root(root, expected_conditions=conditions, canonical_dir=canonical_dir)
+    validate_smoke_root(
+        root, expected_conditions=conditions, canonical_dir=canonical_dir,
+        omitted_weights=omitted_weights,
+    )
 
 
-def compare_a100_repeat(primary_root: Path, repeat_root: Path, tolerance: float = 0.005, *, canonical_dir: Path | None = None) -> dict[str, Any]:
+def compare_a100_repeat(
+    primary_root: Path,
+    repeat_root: Path,
+    tolerance: float = 0.005,
+    *,
+    canonical_dir: Path | None = None,
+    primary_omitted_weights: Mapping[str, str] | None = None,
+    repeat_omitted_weights: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
     """Compare fresh A100 full_sr smoke runs without using MNLI as the gate."""
     primary_root = Path(primary_root).resolve()
     repeat_root = Path(repeat_root).resolve()
-    _validate_a100_root_identity(primary_root, mode="primary", conditions=("standard_lora", "full_sr", "class_prior_reweight"), canonical_dir=canonical_dir)
-    _validate_a100_root_identity(repeat_root, mode="repeat_full_sr", conditions=("full_sr",), canonical_dir=canonical_dir)
+    _validate_a100_root_identity(primary_root, mode="primary", conditions=("standard_lora", "full_sr", "class_prior_reweight"), canonical_dir=canonical_dir, omitted_weights=primary_omitted_weights)
+    _validate_a100_root_identity(repeat_root, mode="repeat_full_sr", conditions=("full_sr",), canonical_dir=canonical_dir, omitted_weights=repeat_omitted_weights)
     primary_provenance, primary_hans, primary_mnli, _ = _repeat_full_sr(primary_root)
     repeat_provenance, repeat_hans, repeat_mnli, _ = _repeat_full_sr(repeat_root)
     for field, primary_value in primary_provenance.items():

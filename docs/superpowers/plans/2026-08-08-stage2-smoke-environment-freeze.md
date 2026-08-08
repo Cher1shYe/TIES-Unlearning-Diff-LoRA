@@ -598,6 +598,7 @@ git commit -m "feat: monitor canonical jobs without auto tuning"
 **Files:**
 - Create: `canonical/freeze.py`
 - Create: `canonical/evidence_transport.py`
+- Create: `canonical/stage2_contract.py`
 - Create: `canonical/source_package.py`
 - Create: `freeze_stage2_environment.py`
 - Create: `package_stage2_source.py`
@@ -605,6 +606,10 @@ git commit -m "feat: monitor canonical jobs without auto tuning"
 - Create: `verify_stage2_evidence.py`
 - Create: `notebooks/stage2_colab_a100_smoke.ipynb`
 - Create: `tests/test_stage2_freeze.py`
+- Modify: `canonical/monitoring.py`
+- Modify: `canonical/stage2_validation.py`
+- Modify: `tests/test_stage2_monitoring.py`
+- Modify: `tests/test_stage2_validation.py`
 - Modify: `.gitignore`
 
 **Interfaces:**
@@ -613,6 +618,7 @@ git commit -m "feat: monitor canonical jobs without auto tuning"
 - Produces: `build_evidence_archive(repo_root, output_path, *, expectations_path=...) -> dict` through the dependency-light `package_stage2_evidence.py` CLI, plus direct no-weight evidence archive transport verification/extraction through `verify_stage2_evidence.py --archive PATH [--extract-dir PATH]`.
 - Freeze bundle contains protocol snapshot/hash, full canonical data manifest, A100 environment manifest, `pip_freeze.txt`, both command records, origin/execution commits, source metadata/expectations/archive hash, execution provenance, and `checksum_inventory.json`.
 - Notebook input filename is `/content/stage2_source.zip`; exported lightweight evidence filename is `/content/stage2_a100_evidence.zip`.
+- `canonical/stage2_contract.py` is the dependency-light production authority for the notebook path, primary/repeat roots and conditions, sibling monitor paths, fixed omitted checkpoints, exact runner outputs, evidence inventory path, and safe extraction root. Runtime tests and transport code import this authority; they do not read this private implementation plan.
 - Freeze CLI supports creation with `--source-archive` and `--commands`, plus isolated `--verify-only --output-dir PATH` verification.
 
 - [ ] **Step 1: Write failing freeze isolation and checksum tests**
@@ -659,7 +665,7 @@ Require clean Git and successful validated A100 smoke. Instantiate the real back
 
 - [ ] **Step 4: Implement exact clean-commit source packaging**
 
-`build_source_package()` fails on dirty Git, reads allow-listed blobs from origin `HEAD`, and creates a deterministic parentless `execution_commit` in a temporary Git object database. The bundle contains only that tree and commit—never origin history, `ties_results/`, environments, caches, weights, or transport archives. Metadata records both `origin_commit` and `execution_commit`, the exact source manifest, and checksums. `package_stage2_source.py` atomically writes an external expectations sidecar via required `--expectations-output`.
+`build_source_package()` fails on dirty Git, reads allow-listed blobs from origin `HEAD`, and creates a deterministic parentless `execution_commit` in a temporary Git object database. The bundle contains only that tree and commit—never origin history, `ties_results/`, environments, caches, weights, or transport archives. The runtime allowlist includes `notebooks/stage2_colab_a100_smoke.ipynb` but excludes this private plan/spec and other private notes. Metadata records both `origin_commit` and `execution_commit`, the exact source manifest, and checksums. `package_stage2_source.py` atomically writes an external expectations sidecar via required `--expectations-output`. A source-package integration test clones the resulting execution commit and runs the entire packaged test suite while proving the notebook is present and this plan/spec is absent.
 
 - [ ] **Step 5: Create the Colab notebook as a thin command runner**
 
@@ -674,19 +680,19 @@ if "A100" not in gpu:
     raise RuntimeError(f"Stage 2 requires A100, found {gpu}")
 ```
 
-```bash
-python -m unittest discover -s tests -v
-python monitor_stage2_job.py --events ties_results/.stage2_monitor/colab_a100_run1.events.jsonl --watch ties_results/stage2_smoke/colab_a100_run1 -- python run_stage2_smoke.py --mode primary --environment colab_a100 --protocol docs/paper_rebuild/FROZEN_EXPERIMENT_PROTOCOL.md --output-dir ties_results/stage2_smoke/colab_a100_run1 --fresh
-python validate_stage2_smoke.py --root ties_results/stage2_smoke/colab_a100_run1 --conditions standard_lora full_sr class_prior_reweight --canonical-dir ties_results/canonical_v1
-python monitor_stage2_job.py --events ties_results/.stage2_monitor/colab_a100_repeat_full_sr.events.jsonl --watch ties_results/stage2_smoke/colab_a100_repeat_full_sr -- python run_stage2_smoke.py --mode repeat_full_sr --environment colab_a100 --protocol docs/paper_rebuild/FROZEN_EXPERIMENT_PROTOCOL.md --output-dir ties_results/stage2_smoke/colab_a100_repeat_full_sr --fresh
-python validate_stage2_smoke.py --root ties_results/stage2_smoke/colab_a100_repeat_full_sr --conditions full_sr --canonical-dir ties_results/canonical_v1
-python validate_stage2_smoke.py --root ties_results/stage2_smoke/colab_a100_run1 --conditions standard_lora full_sr class_prior_reweight --canonical-dir ties_results/canonical_v1 --compare-repeat ties_results/stage2_smoke/colab_a100_repeat_full_sr
-python freeze_stage2_environment.py --protocol docs/paper_rebuild/FROZEN_EXPERIMENT_PROTOCOL.md --smoke-root ties_results/stage2_smoke/colab_a100_run1 --repeat-root ties_results/stage2_smoke/colab_a100_repeat_full_sr --source-archive /content/stage2_source.zip --source-expectations /content/stage2_source_expectations.json --commands ties_results/stage2_smoke/colab_a100_run1/commands.json --repeat-commands ties_results/stage2_smoke/colab_a100_repeat_full_sr/commands.json --repo-root . --output-dir ties_results/stage2_smoke/freeze_bundle --fresh
-```
+Every notebook operation is a fail-fast `subprocess.run(argv, check=True,
+cwd=repo)`. In particular, both monitor argv start with `sys.executable` and
+the resolved absolute `repo / "monitor_stage2_job.py"`; each child argv starts
+with that same `sys.executable` and resolved absolute
+`repo / "run_stage2_smoke.py"`. Consequently `commands.json`, all run
+manifests, and the monitor JSONL carry the same exact primary/repeat child argv.
+The validator invocations include the required exact `--conditions`; freeze
+creation includes both `--repeat-root` and `--repeat-commands` plus the external
+expectations sidecar.
 
 Before these commands, the notebook extracts `stage2_source.zip`, verifies `stage2_source.bundle` against `source_metadata.json`, clones the bundle, checks out the recorded commit, and asserts `git status --porcelain` is empty. The notebook must keep `--events` in the sibling `ties_results/.stage2_monitor/` directory; it must never place monitor evidence inside a child `--fresh --output-dir` root.
 
-The export cell first reruns both production validators and freeze verification. It excludes every weight suffix but includes checkpoint path/SHA-256 metadata, configs, manifests, metrics, predictions, logs, both stored validation outputs, sibling `ties_results/.stage2_monitor/` JSONL monitor evidence, source expectations, and every exact freeze member. The ignored `ties_results/stage2_smoke/stage2_evidence_inventory.json` uses schema v2 with exact `files` and `omitted_weights`; ZIP members equal `files` plus that inventory. `verify_stage2_evidence.py` directly verifies this no-weight transport and optionally performs safe `ties_results/`-only extraction. Runtime evidence is not part of the source package.
+The export cell first reruns both production validators and freeze verification. It excludes every weight suffix but includes checkpoint path/SHA-256 metadata, configs, manifests, metrics, predictions, logs, both stored validation outputs, sibling `ties_results/.stage2_monitor/` JSONL monitor evidence, source expectations, and every exact freeze member. The ignored `ties_results/stage2_smoke/stage2_evidence_inventory.json` uses schema v2 with exact `files` and exactly the two fixed `omitted_weights`; ZIP members equal `files` plus that inventory. `verify_stage2_evidence.py` safely extracts to a fresh temporary tree, reuses the production validator in an exact omitted-weight mode for all non-weight semantics, recomputes the repeat comparison, checks stored JSON/Markdown semantics, validates the producer-owned strict monitor schema and exact argv/cwd, verifies freeze semantics and exact membership, and only then optionally performs safe `ties_results/`-only extraction. Runtime evidence is not part of the source package.
 
 - [ ] **Step 6: Ignore only generated Stage 2 runtime files**
 
@@ -702,6 +708,7 @@ python package_stage2_source.py --help
 python freeze_stage2_environment.py --help
 python package_stage2_evidence.py --help
 python verify_stage2_evidence.py --help
+python monitor_stage2_job.py --help
 python -m unittest discover -s tests -p "test_stage2_freeze.py" -v
 python -m unittest discover -s tests -v
 git diff --check
@@ -712,8 +719,8 @@ Expected: all exit 0.
 - [ ] **Step 8: Commit Task 7 and verify a clean code commit**
 
 ```powershell
-git add .gitignore canonical/freeze.py canonical/source_package.py freeze_stage2_environment.py package_stage2_source.py notebooks/stage2_colab_a100_smoke.ipynb tests/test_stage2_freeze.py
-git commit -m "feat: freeze stage2 A100 execution environment"
+git add canonical/evidence_transport.py canonical/monitoring.py canonical/runner.py canonical/source_package.py canonical/stage2_contract.py canonical/stage2_validation.py validate_stage2_smoke.py notebooks/stage2_colab_a100_smoke.ipynb tests/test_stage2_freeze.py tests/test_stage2_monitoring.py tests/test_stage2_validation.py docs/superpowers/plans/2026-08-08-stage2-smoke-environment-freeze.md docs/superpowers/specs/2026-08-08-stage2-smoke-environment-freeze-design.md
+git commit -m "fix: validate transported stage2 semantics"
 git status --short
 git rev-parse HEAD
 ```
@@ -872,7 +879,7 @@ Run:
 .venv-stage2\Scripts\python.exe verify_stage2_evidence.py --archive ..\stage2_a100_evidence.zip --extract-dir .
 ```
 
-Expected: direct ZIP transport verification passes before extraction, including exact membership/hashes, both stored A100 validator outputs, repeat comparison, monitor policy, freeze verification, expectations, and omitted-weight metadata. Only then does the verifier extract it at the repository root, writing safe rooted `ties_results/` members and refusing overwrites. Do not extract only under `ties_results/stage2_smoke/`; the two sibling monitor files are also required. Do not claim or attempt post-extraction production validation: those validators correctly require the deliberately omitted checkpoint weights.
+Expected: direct ZIP transport verification passes before extraction, including exact membership/hashes, a full weight-optional production-validator recomputation for primary/repeat, both stored A100 validator outputs, repeat comparison, strict producer monitor schema and exact argv/cwd, freeze verification, expectations, and the two fixed omitted-checkpoint bindings. Only then does the verifier extract it at the repository root, writing safe rooted `ties_results/` members and refusing overwrites. Do not extract only under `ties_results/stage2_smoke/`; the two sibling monitor files are also required. Do not claim or attempt ordinary post-extraction production validation: it correctly requires the deliberately omitted checkpoint payloads; the transport verifier's tightly scoped omitted-weight mode is the independent semantic check.
 
 ---
 

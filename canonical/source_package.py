@@ -23,6 +23,7 @@ _MEMBERS = ("source_metadata.json", "stage2_source.bundle")
 _ALLOWED_DIRS = {"canonical", "configs", "data", "models", "tests", "training", "utils"}
 _EXCLUDED_PARTS = {"ties_results", "ties_unlearn_results", ".venv-stage2", ".uv-cache", "__pycache__", ".stage2_monitor", ".git", ".worktrees", "out"}
 _ALLOWED_DOC_FILES = {"docs/paper_rebuild/FROZEN_EXPERIMENT_PROTOCOL.md"}
+_ALLOWED_NOTEBOOK_FILES = {"notebooks/stage2_colab_a100_smoke.ipynb"}
 _ROOT_FILES = {
     ".gitignore", "LICENSE", "README.md", "requirements.txt",
     "finish_baselines.py", "finish_sensitivity.py", "freeze_stage2_environment.py",
@@ -68,7 +69,7 @@ def _allowed_source(name: str) -> bool:
         return False
     if path.suffix.casefold() in {".zip", ".pt", ".pth", ".ckpt", ".bin", ".safetensors", ".pyc"}:
         return False
-    return name in _ALLOWED_DOC_FILES or (len(path.parts) > 1 and path.parts[0] in _ALLOWED_DIRS) or (len(path.parts) == 1 and name in _ROOT_FILES)
+    return name in _ALLOWED_DOC_FILES or name in _ALLOWED_NOTEBOOK_FILES or (len(path.parts) > 1 and path.parts[0] in _ALLOWED_DIRS) or (len(path.parts) == 1 and name in _ROOT_FILES)
 
 
 def _git(root: Path, *args: str, input_bytes: bytes | None = None, env: dict[str, str] | None = None) -> bytes:

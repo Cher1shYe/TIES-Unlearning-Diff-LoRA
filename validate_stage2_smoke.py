@@ -20,12 +20,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _markdown(report: dict) -> str:
-    lines = ["# Stage 2 Smoke Validation", "", f"State: `{report['state']}`", "", "## Checks", ""]
-    lines.extend(f"- {name}: `{entry['state']}`" for name, entry in report["checks"].items())
-    if "repeat_comparison" in report:
-        comparison = report["repeat_comparison"]
-        lines.extend(["", "## A100 Repeat", "", f"State: `{comparison['state']}`"])
-    return "\n".join(lines) + "\n"
+    from canonical.stage2_validation import render_validation_markdown
+
+    return render_validation_markdown(report)
 
 
 def main(argv: list[str] | None = None) -> int:

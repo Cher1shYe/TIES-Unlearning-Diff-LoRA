@@ -19,6 +19,8 @@ from canonical.conditions import (
     CanonicalCondition,
     rotated_condition_order,
 )
+from canonical.stage2_contract import METHOD_OUTPUTS as _METHOD_OUTPUTS
+from canonical.stage2_contract import SHARED_OUTPUTS as _SHARED_OUTPUTS
 
 
 @dataclass(frozen=True)
@@ -43,27 +45,6 @@ class CanonicalBackend(Protocol):
         run_dir: Path,
         checkpoint: CheckpointRef,
     ) -> Mapping[str, Any]: ...
-
-
-_METHOD_OUTPUTS = (
-    "config.json",
-    "run_manifest.json",
-    "metrics.json",
-    "hans_predictions.jsonl",
-    "selected_layers.json",
-    "data_access.jsonl",
-    "stdout.log",
-    "stderr.log",
-)
-_SHARED_OUTPUTS = (
-    "config.json",
-    "run_manifest.json",
-    "shared_checkpoint.json",
-    "shared_checkpoint_metadata.json",
-    "data_access.jsonl",
-    "stdout.log",
-    "stderr.log",
-)
 
 
 def _utc_now() -> str:

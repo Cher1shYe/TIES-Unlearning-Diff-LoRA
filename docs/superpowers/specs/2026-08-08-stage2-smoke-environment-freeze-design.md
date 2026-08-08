@@ -147,6 +147,18 @@ A generic subprocess monitor wraps local and A100 smoke commands. Production thr
 
 Tests and a monitor drill use accelerated wall-clock thresholds while recording that the production profile remains 300/3,600/43,200 seconds. Only the hard-timeout path terminates automatically.
 
+`canonical.stage2_contract` is the dependency-light production authority for
+the notebook, primary/repeat roots and conditions, sibling monitor paths, exact
+runner outputs, fixed omitted checkpoints, evidence inventory, and extraction
+root. Runtime tests import this contract and never depend on the excluded
+private plan/spec. The producer and verifier also share
+`canonical.monitoring.validate_monitor_jsonl`: successful evidence must be
+strict finite JSONL with exact discriminated event fields, timezone-aware and
+nondecreasing timestamps, nondecreasing elapsed time, production policy and
+initial fingerprints in the first `STARTED`, at least one `STATUS_CHECK`, and a
+final zero-return `COMPLETED`. Its normalized command and cwd must bind exactly
+to the recorded child command; failure events are forbidden.
+
 Monitor evidence is deliberately outside every child `--fresh --output-dir`
 root: use a sibling evidence directory such as
 `ties_results/.stage2_monitor/local_rtx5080.events.jsonl`, while `--watch`
@@ -160,7 +172,7 @@ A generated Colab notebook is a thin executor, not a second implementation. It:
 
 1. verifies that the assigned GPU name contains `A100` and stops otherwise;
 2. installs the tested dependency set;
-3. verifies an external expectations sidecar, then unpacks a source-only bundle whose deterministic parentless `execution_commit` contains exactly allow-listed blobs from the clean `origin_commit` and no runtime artifacts or origin history;
+3. verifies an external expectations sidecar, then unpacks a source-only bundle whose deterministic parentless `execution_commit` contains exactly allow-listed blobs from the clean `origin_commit`, including the thin notebook but excluding this private plan/spec, runtime artifacts, and origin history;
 4. runs unit tests;
 5. executes the A100 smoke run and production validator;
 6. repeats `full_sr` from a fresh tiny training path in the same runtime and runs its production validator;
@@ -175,13 +187,19 @@ external sidecar remains outside the source ZIP and is preserved in the final
 evidence inventory.
 
 The evidence ZIP is independently transport-verifiable without model weights.
-Its inventory lists exact transported `files` plus every `omitted_weights`
-path/hash/reason bound to successful status and shared-checkpoint metadata. A
-local verifier validates the ZIP before any extraction, reruns freeze semantic
-verification, validates both stored A100 validation results and production
-monitor JSONL records, and extracts only safe `ties_results/` paths without
-overwriting existing members. Production smoke validation is not rerun after
-transport because it correctly requires the omitted checkpoint payloads.
+Its inventory lists exact transported `files` plus exactly the primary and
+repeat `seed_42/shared_phase2/checkpoints/shared.pt` omissions. Each omitted
+path/hash/reason is bound to status, shared checkpoint JSON, checkpoint
+metadata, the shared manifest, and every applicable branch manifest. Before any
+user extraction, a local verifier safely reconstructs a fresh temporary tree,
+reruns freeze semantic verification, and reuses the production validator in a
+tightly scoped exact omitted-weight mode. That mode reruns all non-weight
+config/seed/manifest/audit/HANS aggregation/class-prior/checkpoint/repeat
+semantics and compares the independently recomputed results with both stored
+JSON and Markdown reports. It also validates both producer-owned monitor JSONL
+records against exact primary/repeat argv and cwd. Only then may it extract safe
+`ties_results/` paths without overwriting. Ordinary production validation is
+not claimed after extraction because it correctly requires the omitted payloads.
 
 Only source code and experiment artifacts are transferred. No manuscript, private notes, credentials, or historical result corpus is uploaded.
 

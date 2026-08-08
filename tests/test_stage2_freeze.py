@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -132,7 +133,7 @@ class Stage2FreezeTest(unittest.TestCase):
             copy_environment.parent.mkdir(parents=True, exist_ok=True)
             copy_environment.write_bytes((manifests / "environment_manifest.json").read_bytes())
             mode = "primary" if root == smoke else "repeat_full_sr"
-            argv = ["python", "run_stage2_smoke.py", "--mode", mode, "--environment", "colab_a100", "--protocol", "docs/paper_rebuild/FROZEN_EXPERIMENT_PROTOCOL.md", "--output-dir", f"ties_results/stage2_smoke/{root.name}", "--fresh"]
+            argv = [sys.executable, str((git_repo / "run_stage2_smoke.py").resolve()), "--mode", mode, "--environment", "colab_a100", "--protocol", "docs/paper_rebuild/FROZEN_EXPERIMENT_PROTOCOL.md", "--output-dir", f"ties_results/stage2_smoke/{root.name}", "--fresh"]
             write_json(root / "commands.json", {"schema_version": "stage2_smoke_commands_v1", "mode": mode, "environment": "colab_a100", "argv": argv, "expected_condition_tags": list(tags[1:]), "profile_name": "stage2_smoke_v1", "gpu_name": "NVIDIA A100-SXM4-40GB", "started_at": "2026-08-08T00:00:00+00:00"})
             for tag in tags:
                 write_json(root / "seed_42" / tag / "run_manifest.json", {"git": {"commit": commit, "branch": None, "dirty": False, "status_porcelain": []}, "command": argv})
@@ -175,7 +176,7 @@ class Stage2FreezeTest(unittest.TestCase):
             (root / "protocol_snapshot" / "protocol_sha256.txt").write_text(protocol_hash + "\n", encoding="utf-8")
             write_json(root / "manifests" / "environment_manifest.json", environment)
             env_hash = sha256_file(root / "manifests" / "environment_manifest.json")
-            argv = ["python","run_stage2_smoke.py","--mode",mode,"--environment","colab_a100","--protocol","docs/paper_rebuild/FROZEN_EXPERIMENT_PROTOCOL.md","--output-dir",f"ties_results/stage2_smoke/{root.name}","--fresh"]
+            argv = [sys.executable,str((Path(repo) / "run_stage2_smoke.py").resolve()),"--mode",mode,"--environment","colab_a100","--protocol","docs/paper_rebuild/FROZEN_EXPERIMENT_PROTOCOL.md","--output-dir",f"ties_results/stage2_smoke/{root.name}","--fresh"]
             write_json(root / "commands.json", {"schema_version":"stage2_smoke_commands_v1","mode":mode,"environment":"colab_a100","argv":argv,"expected_condition_tags":tags,"profile_name":"stage2_smoke_v1","gpu_name":"NVIDIA A100-SXM4-40GB","started_at":"2026-08-08T00:00:00+00:00"})
             checkpoint = root / "seed_42" / "shared_phase2" / "checkpoints" / "shared.pt"
             metadata_path = root / "seed_42" / "shared_phase2" / "shared_checkpoint_metadata.json"
@@ -199,10 +200,11 @@ class Stage2FreezeTest(unittest.TestCase):
         primary_report = validate_smoke_root(primary, expected_conditions=("standard_lora", "full_sr", "class_prior_reweight"), canonical_dir=canonical_dir)
         primary_report["repeat_comparison"] = comparison
         write_json(primary / "stage2_validation.json", primary_report)
-        (primary / "stage2_validation.md").write_text("# Stage 2 Smoke Validation\n\nState: `pass`\n", encoding="utf-8")
+        from canonical.stage2_validation import render_validation_markdown
+        (primary / "stage2_validation.md").write_text(render_validation_markdown(primary_report), encoding="utf-8")
         repeat_report = validate_smoke_root(repeat, expected_conditions=("full_sr",), canonical_dir=canonical_dir)
         write_json(repeat / "stage2_validation.json", repeat_report)
-        (repeat / "stage2_validation.md").write_text("# Stage 2 Smoke Validation\n\nState: `pass`\n", encoding="utf-8")
+        (repeat / "stage2_validation.md").write_text(render_validation_markdown(repeat_report), encoding="utf-8")
         return primary, repeat
 
     @staticmethod
@@ -222,15 +224,19 @@ class Stage2FreezeTest(unittest.TestCase):
 
     @staticmethod
     def _write_monitor(path, command, cwd):
-        records = [
-            {"event":"STARTED","timestamp":0.0,"elapsed_seconds":0.0,"command":command,"cwd":str(Path(cwd).resolve()),"policy":{"check_interval_seconds":300,"stall_seconds":3600,"hard_timeout_seconds":43200},"fingerprints":[]},
-            {"event":"STATUS_CHECK","timestamp":1.0,"elapsed_seconds":1.0,"command":command,"cwd":str(Path(cwd).resolve()),"returncode":None,"fingerprints":[],"watch_errors":[]},
-            {"event":"PROGRESS","timestamp":2.0,"elapsed_seconds":2.0,"command":command,"cwd":str(Path(cwd).resolve()),"changes":[]},
-            {"event":"STALL_WARNING","timestamp":3.0,"elapsed_seconds":3.0,"command":command,"cwd":str(Path(cwd).resolve()),"stall_seconds":3600},
-            {"event":"COMPLETED","timestamp":4.0,"elapsed_seconds":4.0,"command":command,"cwd":str(Path(cwd).resolve()),"returncode":0},
-        ]
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("".join(json.dumps(record, allow_nan=False, sort_keys=True) + "\n" for record in records), encoding="utf-8")
+        from canonical.monitoring import PRODUCTION_POLICY, monitor_command
+
+        class CompletedProcess:
+            def poll(self):
+                return 0
+
+        Path(path).unlink(missing_ok=True)
+        monitor_command(
+            command, cwd=cwd, events_path=path,
+            watched_paths=[Path(cwd) / "ties_results" / "stage2_smoke"],
+            policy=PRODUCTION_POLICY, clock=lambda: 0.0, sleep=lambda _seconds: None,
+            popen_factory=lambda *args, **kwargs: CompletedProcess(),
+        )
 
     @staticmethod
     def _rewrite_evidence(source, destination, transform):
@@ -327,6 +333,7 @@ class Stage2FreezeTest(unittest.TestCase):
         )
         self.assertTrue(_allowed_source("README.md"))
         self.assertTrue(_allowed_source("docs/paper_rebuild/FROZEN_EXPERIMENT_PROTOCOL.md"))
+        self.assertTrue(_allowed_source("notebooks/stage2_colab_a100_smoke.ipynb"))
         self.assertTrue(_allowed_source("run_stage2_smoke.py"))
         self.assertTrue(all(not _allowed_source(path) for path in forbidden))
         with tempfile.TemporaryDirectory() as tmp:
@@ -347,6 +354,56 @@ class Stage2FreezeTest(unittest.TestCase):
             paths = {entry["path"] for entry in metadata["source_manifest"]}
             self.assertIn("canonical/runtime.py", paths)
             self.assertTrue(paths.isdisjoint(forbidden))
+
+    def test_current_source_snapshot_clone_contains_notebook_excludes_private_plan_and_runs_full_suite(self):
+        if os.environ.get("STAGE2_PACKAGED_CLONE_CHILD") == "1":
+            self.skipTest("packaged clone child does not recursively package itself")
+        with tempfile.TemporaryDirectory() as tmp:
+            snapshot = Path(tmp) / "current-origin"
+            snapshot.mkdir()
+            listed = subprocess.run(
+                ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+                cwd=ROOT, check=True, capture_output=True,
+            ).stdout.split(b"\0")
+            for raw in listed:
+                if not raw:
+                    continue
+                relative = raw.decode("utf-8")
+                source = ROOT / relative
+                if not source.is_file():
+                    continue
+                target = snapshot / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, target)
+            self._git(snapshot, "init")
+            self._git(snapshot, "config", "user.email", "fixture@example.test")
+            self._git(snapshot, "config", "user.name", "Fixture")
+            self._git(snapshot, "add", ".")
+            self._git(snapshot, "commit", "-m", "current source integration")
+            archive = Path(tmp) / "source.zip"
+            expectations = Path(tmp) / "expectations.json"
+            metadata = build_source_package(
+                snapshot,
+                snapshot / "docs/paper_rebuild/FROZEN_EXPERIMENT_PROTOCOL.md",
+                archive,
+                expectations_output_path=expectations,
+            )
+            unpack = Path(tmp) / "unpack"
+            with zipfile.ZipFile(archive) as source_zip:
+                source_zip.extractall(unpack)
+            clone = Path(tmp) / "execution"
+            subprocess.run(["git", "clone", str(unpack / "stage2_source.bundle"), str(clone)], check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(clone), "checkout", "--detach", metadata["git"]["execution_commit"]], check=True, capture_output=True)
+            self.assertTrue((clone / "notebooks/stage2_colab_a100_smoke.ipynb").is_file())
+            self.assertFalse((clone / "docs/superpowers/plans/2026-08-08-stage2-smoke-environment-freeze.md").exists())
+            self.assertFalse((clone / "docs/superpowers/specs/2026-08-08-stage2-smoke-environment-freeze-design.md").exists())
+            child_environment = dict(os.environ)
+            child_environment["STAGE2_PACKAGED_CLONE_CHILD"] = "1"
+            result = subprocess.run(
+                [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"],
+                cwd=clone, env=child_environment, text=True, capture_output=True, timeout=240,
+            )
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
 
     def test_source_snapshot_preflights_archive_and_expectations_overwrite_atomically(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -453,6 +510,9 @@ class Stage2FreezeTest(unittest.TestCase):
         self.assertIn("actual!=manifest", notebook)
         self.assertIn("core.autocrlf=false", notebook)
         self.assertIn("torch.cuda.is_available", notebook)
+        self.assertIn("sys.executable,str((repo/'monitor_stage2_job.py').resolve())", notebook)
+        self.assertIn("sys.executable,str((repo/'run_stage2_smoke.py').resolve())", notebook)
+        self.assertNotIn("'--','python','run_stage2_smoke.py'", notebook)
         self.assertGreaterEqual(notebook.count("check=True"), 12)
         ordered = [
             "colab_a100_run1.events.jsonl", "--conditions','standard_lora",
@@ -857,6 +917,10 @@ class Stage2FreezeTest(unittest.TestCase):
             def save(members, value):
                 members[INVENTORY_MEMBER] = (json.dumps(value, sort_keys=True, allow_nan=False) + "\n").encode()
 
+            def replace_inventoried(members, name, payload):
+                members[name] = payload
+                value = inventory(members); value["files"][name] = sha256(payload).hexdigest(); save(members, value)
+
             def add_extra(members):
                 name = "ties_results/stage2_smoke/colab_a100_run1/unexpected.json"
                 members[name] = b"{}\n"
@@ -886,7 +950,57 @@ class Stage2FreezeTest(unittest.TestCase):
                 members[name] = b"extra\n"
                 value = inventory(members); value["files"][name] = sha256(members[name]).hexdigest(); save(members, value)
 
-            for index, transform in enumerate((add_extra, remove_monitor, include_weight, spoof_omitted, spoof_expectations, add_freeze_extra)):
+            def drop_standard_metrics_and_status_key(members):
+                metrics = "ties_results/stage2_smoke/colab_a100_run1/seed_42/standard_lora/metrics.json"
+                status_name = "ties_results/stage2_smoke/colab_a100_run1/seed_42/standard_lora/status.json"
+                status = json.loads(members[status_name]); status["output_hashes"].pop("metrics.json")
+                del members[metrics]
+                value = inventory(members); del value["files"][metrics]
+                members[status_name] = (json.dumps(status, sort_keys=True) + "\n").encode()
+                value["files"][status_name] = sha256(members[status_name]).hexdigest(); save(members, value)
+
+            def invalidate_hans_and_rehash(members):
+                predictions = "ties_results/stage2_smoke/colab_a100_run1/seed_42/full_sr/hans_predictions.jsonl"
+                status_name = "ties_results/stage2_smoke/colab_a100_run1/seed_42/full_sr/status.json"
+                rows = [json.loads(line) for line in members[predictions].decode().splitlines()]
+                rows[0]["gold_label"] = "invalid-label"
+                payload = ("\n".join(json.dumps(row, sort_keys=True) for row in rows) + "\n").encode()
+                status = json.loads(members[status_name]); status["output_hashes"]["hans_predictions.jsonl"] = sha256(payload).hexdigest()
+                members[predictions] = payload
+                members[status_name] = (json.dumps(status, sort_keys=True) + "\n").encode()
+                value = inventory(members); value["files"][predictions] = sha256(payload).hexdigest(); value["files"][status_name] = sha256(members[status_name]).hexdigest(); save(members, value)
+
+            def spoof_branch_shared_hash_and_rehash(members):
+                manifest_name = "ties_results/stage2_smoke/colab_a100_run1/seed_42/full_sr/run_manifest.json"
+                status_name = "ties_results/stage2_smoke/colab_a100_run1/seed_42/full_sr/status.json"
+                manifest = json.loads(members[manifest_name]); manifest["shared_phase2_checkpoint"]["sha256"] = "0" * 64
+                members[manifest_name] = (json.dumps(manifest, sort_keys=True) + "\n").encode()
+                status = json.loads(members[status_name]); status["output_hashes"]["run_manifest.json"] = sha256(members[manifest_name]).hexdigest()
+                members[status_name] = (json.dumps(status, sort_keys=True) + "\n").encode()
+                value = inventory(members); value["files"][manifest_name] = sha256(members[manifest_name]).hexdigest(); value["files"][status_name] = sha256(members[status_name]).hexdigest(); save(members, value)
+
+            def fabricate_omitted_method_weight(members):
+                status_name = "ties_results/stage2_smoke/colab_a100_run1/seed_42/full_sr/status.json"
+                fabricated = "ties_results/stage2_smoke/colab_a100_run1/seed_42/full_sr/fabricated.pt"
+                digest = "f" * 64
+                status = json.loads(members[status_name]); status["output_hashes"]["fabricated.pt"] = digest
+                members[status_name] = (json.dumps(status, sort_keys=True) + "\n").encode()
+                value = inventory(members); value["files"][status_name] = sha256(members[status_name]).hexdigest()
+                value["omitted_weights"].append({"path": fabricated, "sha256": digest, "reason": "model_weight_excluded"})
+                value["omitted_weights"].sort(key=lambda item: item["path"]); save(members, value)
+
+            def tamper_stored_validation_semantics(members):
+                name = "ties_results/stage2_smoke/colab_a100_repeat_full_sr/stage2_validation.json"
+                report = json.loads(members[name]); report["checks"]["hans_recomputation"]["state"] = "tampered"
+                replace_inventoried(members, name, (json.dumps(report, sort_keys=True) + "\n").encode())
+
+            transforms = (
+                add_extra, remove_monitor, include_weight, spoof_omitted, spoof_expectations, add_freeze_extra,
+                drop_standard_metrics_and_status_key, invalidate_hans_and_rehash,
+                spoof_branch_shared_hash_and_rehash, fabricate_omitted_method_weight,
+                tamper_stored_validation_semantics,
+            )
+            for index, transform in enumerate(transforms):
                 with self.subTest(transform=transform.__name__):
                     tampered = Path(tmp) / f"tampered-{index}.zip"
                     self._rewrite_evidence(source, tampered, transform)
@@ -909,10 +1023,10 @@ class Stage2FreezeTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            command = ["python", "run_stage2_smoke.py", "--mode", "primary"]
+            command = [sys.executable, str((ROOT / "run_stage2_smoke.py").resolve()), "--mode", "primary"]
             monitor = root / "monitor.jsonl"
             self._write_monitor(monitor, command, root)
-            validate_monitor_evidence(monitor, expected_command=command)
+            validate_monitor_evidence(monitor, expected_command=command, expected_cwd=root)
 
             cases = {
                 "empty": "",
@@ -925,18 +1039,18 @@ class Stage2FreezeTest(unittest.TestCase):
                 with self.subTest(name=name):
                     monitor.write_text(payload, encoding="utf-8")
                     with self.assertRaises(ValueError):
-                        validate_monitor_evidence(monitor, expected_command=command)
+                        validate_monitor_evidence(monitor, expected_command=command, expected_cwd=root)
 
             self._write_monitor(monitor, command, root)
             records = [json.loads(line) for line in monitor.read_text(encoding="utf-8").splitlines()]
             records[0]["policy"]["stall_seconds"] = 1
             monitor.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "policy"):
-                validate_monitor_evidence(monitor, expected_command=command)
+                validate_monitor_evidence(monitor, expected_command=command, expected_cwd=root)
 
             self._write_monitor(monitor, ["different_program"], root)
             with self.assertRaisesRegex(ValueError, "command"):
-                validate_monitor_evidence(monitor, expected_command=command)
+                validate_monitor_evidence(monitor, expected_command=command, expected_cwd=root)
 
 
 if __name__ == "__main__":

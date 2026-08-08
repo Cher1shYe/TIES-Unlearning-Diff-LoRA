@@ -247,6 +247,38 @@ def _create_smoke_root(
 
 
 class Stage2ValidationTest(unittest.TestCase):
+    def test_weight_optional_validator_reuses_full_semantics_for_exact_shared_checkpoint_omission(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = _create_smoke_root(Path(tmp) / "optional")
+            checkpoint = root / "seed_42" / "shared_phase2" / "checkpoints" / "shared.pt"
+            omitted = {"seed_42/shared_phase2/checkpoints/shared.pt": sha256_file(checkpoint)}
+            checkpoint.unlink()
+
+            report = validate_smoke_root(
+                root, expected_conditions=PRIMARY_CONDITIONS,
+                canonical_dir=Path(tmp) / "canonical_v1", omitted_weights=omitted,
+            )
+
+            self.assertEqual("pass", report["state"])
+
+    def test_weight_optional_validator_rejects_branch_checkpoint_hash_spoof(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = _create_smoke_root(Path(tmp) / "optional-spoof")
+            checkpoint = root / "seed_42" / "shared_phase2" / "checkpoints" / "shared.pt"
+            omitted = {"seed_42/shared_phase2/checkpoints/shared.pt": sha256_file(checkpoint)}
+            checkpoint.unlink()
+            manifest_path = root / "seed_42" / "full_sr" / "run_manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["shared_phase2_checkpoint"]["sha256"] = "0" * 64
+            write_json(manifest_path, manifest)
+            _rehash_status(manifest_path.parent)
+
+            with self.assertRaisesRegex(ValueError, "shared checkpoint"):
+                validate_smoke_root(
+                    root, expected_conditions=PRIMARY_CONDITIONS,
+                    canonical_dir=Path(tmp) / "canonical_v1", omitted_weights=omitted,
+                )
+
     def test_validator_recomputes_hans_and_matches_metrics_exactly(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = _create_smoke_root(Path(tmp) / "nan")
