@@ -3,8 +3,6 @@
 from copy import deepcopy
 from dataclasses import asdict
 from pathlib import Path
-import subprocess
-import sys
 from typing import Any, Mapping
 
 from canonical.artifacts import (
@@ -206,41 +204,9 @@ class RealCanonicalBackend:
         write_json(manifests / "data_manifest.json", data_manifest)
 
         environment = collect_environment_metadata()
-        try:
-            import torch
-
-            environment["cuda_runtime"] = torch.version.cuda
-            if torch.cuda.is_available():
-                environment["gpu"] = torch.cuda.get_device_name(0)
-        except (ImportError, RuntimeError):
-            pass
-        try:
-            driver = subprocess.run(
-                [
-                    "nvidia-smi",
-                    "--query-gpu=driver_version",
-                    "--format=csv,noheader",
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-            ).stdout.splitlines()
-            environment["cuda_driver"] = driver[0].strip() if driver else None
-        except (OSError, subprocess.CalledProcessError):
-            pass
-        try:
-            freeze = subprocess.run(
-                [sys.executable, "-m", "pip", "freeze"],
-                check=True,
-                capture_output=True,
-                text=True,
-            ).stdout.splitlines()
-        except (OSError, subprocess.CalledProcessError):
-            freeze = None
         environment_manifest = {
             "schema_version": "canonical_environment_manifest_v1",
             **environment,
-            "pip_freeze": freeze,
         }
         write_json(manifests / "environment_manifest.json", environment_manifest)
 

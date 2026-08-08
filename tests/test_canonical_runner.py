@@ -260,9 +260,7 @@ class RealCanonicalBackendContractTest(unittest.TestCase):
             with patch.dict(
                 sys.modules,
                 {"datasets": datasets_stub, "data.dataloader": dataloader_stub},
-            ), patch("canonical.backend.collect_environment_metadata", return_value={}), patch(
-                "canonical.backend.subprocess.run", side_effect=OSError("not available")
-            ):
+            ), patch("canonical.backend.collect_environment_metadata", return_value={}):
                 backend.initialize_manifests(root / "output", root / "protocol.md")
 
             self.assertEqual(

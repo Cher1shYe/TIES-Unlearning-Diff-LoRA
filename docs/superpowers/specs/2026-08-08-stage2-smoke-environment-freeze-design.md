@@ -162,17 +162,26 @@ A generated Colab notebook is a thin executor, not a second implementation. It:
 2. installs the tested dependency set;
 3. verifies an external expectations sidecar, then unpacks a source-only bundle whose deterministic parentless `execution_commit` contains exactly allow-listed blobs from the clean `origin_commit` and no runtime artifacts or origin history;
 4. runs unit tests;
-5. executes the A100 smoke run and validator;
-6. repeats `full_sr` from a fresh tiny training path in the same runtime;
+5. executes the A100 smoke run and production validator;
+6. repeats `full_sr` from a fresh tiny training path in the same runtime and runs its production validator;
 7. compares HANS non-entailment accuracy using the frozen absolute 0.005 tolerance;
 8. captures `pip freeze`, Python, PyTorch, Transformers, Datasets, NumPy, CUDA runtime/driver, GPU, command, timestamps, and logs; and
-9. exports a checksum inventory for download into the worktree.
+9. reruns both validators and freeze verification, then exports a no-weight evidence ZIP with an exact v2 inventory.
 
 The local Task 8 run and Colab Task 9 run clone the same archive, configure
 checkout newline conversion off, and execute the identical recorded
 `execution_commit`; Task 9 must not repackage from the execution clone. The
 external sidecar remains outside the source ZIP and is preserved in the final
 evidence inventory.
+
+The evidence ZIP is independently transport-verifiable without model weights.
+Its inventory lists exact transported `files` plus every `omitted_weights`
+path/hash/reason bound to successful status and shared-checkpoint metadata. A
+local verifier validates the ZIP before any extraction, reruns freeze semantic
+verification, validates both stored A100 validation results and production
+monitor JSONL records, and extracts only safe `ties_results/` paths without
+overwriting existing members. Production smoke validation is not rerun after
+transport because it correctly requires the omitted checkpoint payloads.
 
 Only source code and experiment artifacts are transferred. No manuscript, private notes, credentials, or historical result corpus is uploaded.
 

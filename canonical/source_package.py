@@ -20,10 +20,18 @@ from canonical.artifacts import sha256_file, write_json
 _COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _MEMBERS = ("source_metadata.json", "stage2_source.bundle")
-_ALLOWED_DIRS = {"canonical", "configs", "data", "docs", "models", "notebooks", "tests", "training", "utils"}
+_ALLOWED_DIRS = {"canonical", "configs", "data", "models", "tests", "training", "utils"}
 _EXCLUDED_PARTS = {"ties_results", "ties_unlearn_results", ".venv-stage2", ".uv-cache", "__pycache__", ".stage2_monitor", ".git", ".worktrees", "out"}
-_ROOT_FILES = {".gitignore", "LICENSE", "requirements.txt"}
-_ROOT_SUFFIXES = {".py", ".md"}
+_ALLOWED_DOC_FILES = {"docs/paper_rebuild/FROZEN_EXPERIMENT_PROTOCOL.md"}
+_ROOT_FILES = {
+    ".gitignore", "LICENSE", "README.md", "requirements.txt",
+    "finish_baselines.py", "finish_sensitivity.py", "freeze_stage2_environment.py",
+    "main.py", "monitor_stage2_job.py", "package_stage2_evidence.py",
+    "package_stage2_source.py", "plot_mr4_rank_controls.py", "plot_sensitivity.py",
+    "run_ablations.py", "run_baselines.py", "run_canonical.py", "run_multiseed.py",
+    "run_sensitivity.py", "run_stage2_smoke.py", "validate_stage2_smoke.py",
+    "verify_stage2_evidence.py",
+}
 _EXCLUSIONS_METADATA = sorted(_EXCLUDED_PARTS | {"*.zip", "model weights", "runtime evidence"})
 
 
@@ -60,7 +68,7 @@ def _allowed_source(name: str) -> bool:
         return False
     if path.suffix.casefold() in {".zip", ".pt", ".pth", ".ckpt", ".bin", ".safetensors", ".pyc"}:
         return False
-    return (len(path.parts) > 1 and path.parts[0] in _ALLOWED_DIRS) or (len(path.parts) == 1 and (name in _ROOT_FILES or path.suffix in _ROOT_SUFFIXES))
+    return name in _ALLOWED_DOC_FILES or (len(path.parts) > 1 and path.parts[0] in _ALLOWED_DIRS) or (len(path.parts) == 1 and name in _ROOT_FILES)
 
 
 def _git(root: Path, *args: str, input_bytes: bytes | None = None, env: dict[str, str] | None = None) -> bytes:

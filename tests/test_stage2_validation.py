@@ -58,6 +58,13 @@ def _write_success_status(directory, relative_outputs):
         {
             "schema_version": "canonical_status_v1",
             "state": "success",
+            "started_at": "2026-08-08T00:00:00+00:00",
+            "finished_at": "2026-08-08T00:00:01+00:00",
+            "wall_time_seconds": 1.0,
+            "exit_status": 0,
+            "peak_gpu_memory_bytes": None,
+            "error_type": None,
+            "error": None,
             "output_hashes": {
                 relative: sha256_file(directory / relative) for relative in relative_outputs
             },

@@ -23,8 +23,8 @@ from canonical.freeze import (
     build_freeze_bundle,
     verify_freeze_bundle,
 )
-from canonical.source_package import _tracked_entries, build_source_package, verify_source_package
-from canonical.stage2_validation import compare_a100_repeat
+from canonical.source_package import _allowed_source, _tracked_entries, build_source_package, verify_source_package
+from canonical.stage2_validation import compare_a100_repeat, validate_smoke_root
 
 
 class CanonicalManifestBackend:
@@ -33,13 +33,25 @@ class CanonicalManifestBackend:
 
     def initialize_manifests(self, output_dir, _protocol_path):
         manifests = Path(output_dir) / "manifests"
-        def entry(name, count):
+        provenance = {
+            ("mnli", "train"): ("nyu-mll/glue:mnli", "train", ["idx", "row_id", "id", "uid"], []),
+            ("mnli", "validation_matched"): ("nyu-mll/glue:mnli", "validation_matched", ["idx", "row_id", "id", "uid"], []),
+            ("hans", "build"): ("tommccoy1/hans", "build", ["pairID"], []),
+            ("hans", "dev"): ("tommccoy1/hans", "dev", ["pairID"], []),
+            ("hans", "evaluation"): ("tommccoy1/hans", "evaluation", ["pairID"], ["gold_label", "heuristic", "subcase"]),
+            ("ood", "esnli"): ("e-SNLI", "test", ["pairID", "uid", "id", "idx"], []),
+            ("ood", "anli"): ("facebook/anli", "test", ["pairID", "uid", "id", "idx"], []),
+            ("ood", "snli_hard"): ("snli_1.0_test_hard", "test", ["pairID", "uid", "id", "idx"], []),
+            ("ood", "wanli"): ("alisawuffles/WANLI", "test", ["pairID", "uid", "id", "idx"], []),
+        }
+        def entry(group, name, count):
             values = [f"{name}-{index}" for index in range(count)]
             payload = json.dumps(values, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
             import hashlib
             digest = hashlib.sha256(payload).hexdigest()
-            selected_limit = count if name.startswith("mnli-") else None
-            return {"source": name, "split": "test", "id_strategy": "preferred_field_or_content_sha256", "preferred_id_fields": ["id"], "strata_fields": [], "selection_seed": 42, "selected_limit": selected_limit, "full_count": count, "selected_count": count, "full_ids": values, "selected_ids": values, "full_ids_sha256": digest, "selected_ids_sha256": digest}
+            source, split, preferred, strata = provenance[(group, name)]
+            selected_limit = count if group == "mnli" else None
+            return {"source": source, "split": split, "id_strategy": "preferred_field_or_content_sha256", "preferred_id_fields": preferred, "strata_fields": strata, "selection_seed": 42, "selected_limit": selected_limit, "full_count": count, "selected_count": count, "full_ids": values, "selected_ids": values, "full_ids_sha256": digest, "selected_ids_sha256": digest}
         write_json(
             manifests / "data_manifest.json",
             {
@@ -47,9 +59,9 @@ class CanonicalManifestBackend:
                 "scope": "canonical_v1",
                 "data_seed": 42,
                 "hans_split_seed": 42,
-                "mnli": {"train": entry("mnli-train", 100000), "validation_matched": entry("mnli-validation", 5000)},
-                "hans": {name: entry(f"hans-{name}", 1) for name in ("build", "dev", "evaluation")},
-                "ood": {name: entry(f"ood-{name}", 1) for name in ("esnli", "anli", "snli_hard", "wanli")},
+                "mnli": {"train": entry("mnli", "train", 100000), "validation_matched": entry("mnli", "validation_matched", 5000)},
+                "hans": {name: entry("hans", name, 1) for name in ("build", "dev", "evaluation")},
+                "ood": {name: entry("ood", name, 1) for name in ("esnli", "anli", "snli_hard", "wanli")},
             },
         )
 
@@ -71,7 +83,8 @@ class Stage2FreezeTest(unittest.TestCase):
         self._git(repo, "config", "user.name", "Fixture")
         (repo / "tracked.txt").write_text("source\n", encoding="utf-8")
         (repo / ".gitignore").write_text("ties_results/\n", encoding="utf-8")
-        protocol = repo / "FROZEN_EXPERIMENT_PROTOCOL.md"
+        protocol = repo / "docs" / "paper_rebuild" / "FROZEN_EXPERIMENT_PROTOCOL.md"
+        protocol.parent.mkdir(parents=True)
         protocol.write_bytes(b"# frozen\n")
         self._git(repo, "add", ".")
         self._git(repo, "commit", "-m", "fixture")
@@ -89,7 +102,7 @@ class Stage2FreezeTest(unittest.TestCase):
         subprocess.run(["git", "-c", "core.autocrlf=false", "clone", str(unpack / "stage2_source.bundle"), str(repo)], check=True, capture_output=True)
         subprocess.run(["git", "-C", str(repo), "config", "core.autocrlf", "false"], check=True, capture_output=True)
         subprocess.run(["git", "-C", str(repo), "checkout", "--detach", metadata["git"]["execution_commit"]], check=True, capture_output=True)
-        return repo, repo / "FROZEN_EXPERIMENT_PROTOCOL.md", archive, expectations
+        return repo, repo / "docs" / "paper_rebuild" / "FROZEN_EXPERIMENT_PROTOCOL.md", archive, expectations
 
     def _a100_smoke(self, directory):
         smoke = Path(directory) / "ties_results" / "stage2_smoke" / "colab_a100_run1"
@@ -99,7 +112,10 @@ class Stage2FreezeTest(unittest.TestCase):
             {
                 "schema_version": "canonical_environment_manifest_v1",
                 "gpu": "NVIDIA A100-SXM4-40GB",
+                "torch_gpu": "NVIDIA A100-SXM4-40GB",
+                "nvidia_smi_gpu": "NVIDIA A100-SXM4-40GB",
                 "python": "3.12.0",
+                "python_implementation": "CPython",
                 "platform": "Linux-test",
                 "cuda_runtime": "12.8",
                 "cuda_driver": "555.1",
@@ -116,9 +132,10 @@ class Stage2FreezeTest(unittest.TestCase):
             copy_environment.parent.mkdir(parents=True, exist_ok=True)
             copy_environment.write_bytes((manifests / "environment_manifest.json").read_bytes())
             mode = "primary" if root == smoke else "repeat_full_sr"
-            write_json(root / "commands.json", {"schema_version": "stage2_smoke_commands_v1", "mode": mode, "environment": "colab_a100", "argv": ["python", "run_stage2_smoke.py", "--mode", mode, "--environment", "colab_a100", "--protocol", "FROZEN_EXPERIMENT_PROTOCOL.md", "--output-dir", f"ties_results/stage2_smoke/{root.name}", "--fresh"], "expected_condition_tags": list(tags[1:]), "profile_name": "stage2_smoke_v1", "gpu_name": "NVIDIA A100-SXM4-40GB", "started_at": "2026-08-08T00:00:00+00:00"})
+            argv = ["python", "run_stage2_smoke.py", "--mode", mode, "--environment", "colab_a100", "--protocol", "docs/paper_rebuild/FROZEN_EXPERIMENT_PROTOCOL.md", "--output-dir", f"ties_results/stage2_smoke/{root.name}", "--fresh"]
+            write_json(root / "commands.json", {"schema_version": "stage2_smoke_commands_v1", "mode": mode, "environment": "colab_a100", "argv": argv, "expected_condition_tags": list(tags[1:]), "profile_name": "stage2_smoke_v1", "gpu_name": "NVIDIA A100-SXM4-40GB", "started_at": "2026-08-08T00:00:00+00:00"})
             for tag in tags:
-                write_json(root / "seed_42" / tag / "run_manifest.json", {"git": {"commit": commit}})
+                write_json(root / "seed_42" / tag / "run_manifest.json", {"git": {"commit": commit, "branch": None, "dirty": False, "status_porcelain": []}, "command": argv})
         write_json(
             smoke / "stage2_validation.json",
             {
@@ -146,18 +163,20 @@ class Stage2FreezeTest(unittest.TestCase):
         commit = self._git(repo, "rev-parse", "HEAD").stdout.strip()
         environment = {
             "schema_version": "canonical_environment_manifest_v1", "gpu": "NVIDIA A100-SXM4-40GB",
-            "python": "3.12.0", "platform": "Linux-test", "cuda_runtime": "12.8", "cuda_driver": "555.1",
+            "torch_gpu": "NVIDIA A100-SXM4-40GB", "nvidia_smi_gpu": "NVIDIA A100-SXM4-40GB",
+            "python": "3.12.0", "python_implementation": "CPython", "platform": "Linux-test", "cuda_runtime": "12.8", "cuda_driver": "555.1",
             "packages": {"torch": "2.11.0", "transformers": "5.0", "datasets": "4.0", "numpy": "2.0"},
             "pip_freeze": ["datasets==4.0", "numpy==2.0", "torch==2.11.0", "transformers==5.0"],
         }
         for root, mode, tags in ((primary, "primary", ["standard_lora", "full_sr", "class_prior_reweight"]), (repeat, "repeat_full_sr", ["full_sr"])):
             protocol_snapshot = root / "protocol_snapshot" / "FROZEN_EXPERIMENT_PROTOCOL.md"
-            protocol_snapshot.write_bytes((Path(repo) / "FROZEN_EXPERIMENT_PROTOCOL.md").read_bytes())
+            protocol_snapshot.write_bytes((Path(repo) / "docs" / "paper_rebuild" / "FROZEN_EXPERIMENT_PROTOCOL.md").read_bytes())
             protocol_hash = sha256_file(protocol_snapshot)
             (root / "protocol_snapshot" / "protocol_sha256.txt").write_text(protocol_hash + "\n", encoding="utf-8")
             write_json(root / "manifests" / "environment_manifest.json", environment)
             env_hash = sha256_file(root / "manifests" / "environment_manifest.json")
-            write_json(root / "commands.json", {"schema_version":"stage2_smoke_commands_v1","mode":mode,"environment":"colab_a100","argv":["python","run_stage2_smoke.py","--mode",mode,"--environment","colab_a100","--protocol","FROZEN_EXPERIMENT_PROTOCOL.md","--output-dir",f"ties_results/stage2_smoke/{root.name}","--fresh"],"expected_condition_tags":tags,"profile_name":"stage2_smoke_v1","gpu_name":"NVIDIA A100-SXM4-40GB","started_at":"2026-08-08T00:00:00+00:00"})
+            argv = ["python","run_stage2_smoke.py","--mode",mode,"--environment","colab_a100","--protocol","docs/paper_rebuild/FROZEN_EXPERIMENT_PROTOCOL.md","--output-dir",f"ties_results/stage2_smoke/{root.name}","--fresh"]
+            write_json(root / "commands.json", {"schema_version":"stage2_smoke_commands_v1","mode":mode,"environment":"colab_a100","argv":argv,"expected_condition_tags":tags,"profile_name":"stage2_smoke_v1","gpu_name":"NVIDIA A100-SXM4-40GB","started_at":"2026-08-08T00:00:00+00:00"})
             checkpoint = root / "seed_42" / "shared_phase2" / "checkpoints" / "shared.pt"
             metadata_path = root / "seed_42" / "shared_phase2" / "shared_checkpoint_metadata.json"
             metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
@@ -167,20 +186,60 @@ class Stage2FreezeTest(unittest.TestCase):
             for manifest_path in (root / "seed_42").glob("*/run_manifest.json"):
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
                 manifest["git"]["commit"] = commit
+                manifest["git"] = {"commit": commit, "branch": None, "dirty": False, "status_porcelain": []}
+                manifest["command"] = argv
                 manifest["protocol_sha256"] = protocol_hash
                 manifest["environment_manifest_sha256"] = env_hash
                 if manifest_path.parent.name not in {"shared_phase2", "standard_lora"}:
                     manifest["shared_phase2_checkpoint"] = checkpoint_ref
                 write_json(manifest_path, manifest)
                 _rehash_status(manifest_path.parent)
-        comparison = compare_a100_repeat(primary, repeat, canonical_dir=Path(repo) / "ties_results" / "canonical_v1")
-        write_json(primary / "stage2_validation.json", {"schema_version":"stage2_validation_v1","root":str(primary),"state":"pass","checks":{},"repeat_comparison":comparison})
+        canonical_dir = Path(repo) / "ties_results" / "canonical_v1"
+        comparison = compare_a100_repeat(primary, repeat, canonical_dir=canonical_dir)
+        primary_report = validate_smoke_root(primary, expected_conditions=("standard_lora", "full_sr", "class_prior_reweight"), canonical_dir=canonical_dir)
+        primary_report["repeat_comparison"] = comparison
+        write_json(primary / "stage2_validation.json", primary_report)
         (primary / "stage2_validation.md").write_text("# Stage 2 Smoke Validation\n\nState: `pass`\n", encoding="utf-8")
+        repeat_report = validate_smoke_root(repeat, expected_conditions=("full_sr",), canonical_dir=canonical_dir)
+        write_json(repeat / "stage2_validation.json", repeat_report)
+        (repeat / "stage2_validation.md").write_text("# Stage 2 Smoke Validation\n\nState: `pass`\n", encoding="utf-8")
         return primary, repeat
 
     @staticmethod
     def _fake_gpu_probe():
         return {"nvidia_smi": "NVIDIA A100-SXM4-40GB", "torch_gpu": "NVIDIA A100-SXM4-40GB", "torch_cuda": "12.8"}
+
+    @staticmethod
+    def _environment_probe():
+        return {
+            "schema_version": "canonical_environment_manifest_v1", "gpu": "NVIDIA A100-SXM4-40GB",
+            "torch_gpu": "NVIDIA A100-SXM4-40GB", "nvidia_smi_gpu": "NVIDIA A100-SXM4-40GB",
+            "python": "3.12.0", "python_implementation": "CPython", "platform": "Linux-test",
+            "cuda_runtime": "12.8", "cuda_driver": "555.1",
+            "packages": {"torch": "2.11.0", "transformers": "5.0", "datasets": "4.0", "numpy": "2.0"},
+            "pip_freeze": ["datasets==4.0", "numpy==2.0", "torch==2.11.0", "transformers==5.0"],
+        }
+
+    @staticmethod
+    def _write_monitor(path, command, cwd):
+        records = [
+            {"event":"STARTED","timestamp":0.0,"elapsed_seconds":0.0,"command":command,"cwd":str(Path(cwd).resolve()),"policy":{"check_interval_seconds":300,"stall_seconds":3600,"hard_timeout_seconds":43200},"fingerprints":[]},
+            {"event":"STATUS_CHECK","timestamp":1.0,"elapsed_seconds":1.0,"command":command,"cwd":str(Path(cwd).resolve()),"returncode":None,"fingerprints":[],"watch_errors":[]},
+            {"event":"PROGRESS","timestamp":2.0,"elapsed_seconds":2.0,"command":command,"cwd":str(Path(cwd).resolve()),"changes":[]},
+            {"event":"STALL_WARNING","timestamp":3.0,"elapsed_seconds":3.0,"command":command,"cwd":str(Path(cwd).resolve()),"stall_seconds":3600},
+            {"event":"COMPLETED","timestamp":4.0,"elapsed_seconds":4.0,"command":command,"cwd":str(Path(cwd).resolve()),"returncode":0},
+        ]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("".join(json.dumps(record, allow_nan=False, sort_keys=True) + "\n" for record in records), encoding="utf-8")
+
+    @staticmethod
+    def _rewrite_evidence(source, destination, transform):
+        with zipfile.ZipFile(source) as archive:
+            members = {info.filename: archive.read(info.filename) for info in archive.infolist()}
+        transform(members)
+        with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for name, payload in members.items():
+                archive.writestr(name, payload)
 
     def test_source_package_binds_clean_commit_protocol_and_verified_git_bundle(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -257,6 +316,38 @@ class Stage2FreezeTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "symlink/submodule"):
                     _tracked_entries(repo)
 
+    def test_source_allowlist_excludes_private_notes_reports_and_nonruntime_docs(self):
+        forbidden = (
+            "MR4_REVISION_NOTES.md",
+            "docs/paper_rebuild/PAPER_REBUILD_MASTER_CHECKLIST.md",
+            "docs/paper_rebuild/STAGE1_CANONICAL_INFRASTRUCTURE_REPORT.md",
+            "docs/superpowers/plans/2026-08-08-stage2-smoke-environment-freeze.md",
+            "docs/superpowers/specs/2026-08-08-stage2-smoke-environment-freeze-design.md",
+            "manuscript/private_notes.md",
+        )
+        self.assertTrue(_allowed_source("README.md"))
+        self.assertTrue(_allowed_source("docs/paper_rebuild/FROZEN_EXPERIMENT_PROTOCOL.md"))
+        self.assertTrue(_allowed_source("run_stage2_smoke.py"))
+        self.assertTrue(all(not _allowed_source(path) for path in forbidden))
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, protocol = self._source_repo(tmp)
+            for relative in forbidden:
+                path = repo / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("private\n", encoding="utf-8")
+            runtime = repo / "canonical" / "runtime.py"
+            runtime.parent.mkdir(parents=True)
+            runtime.write_text("VALUE = 1\n", encoding="utf-8")
+            self._git(repo, "add", ".")
+            self._git(repo, "commit", "-m", "allowlist fixture")
+            metadata = build_source_package(
+                repo, protocol, Path(tmp) / "source.zip",
+                expectations_output_path=Path(tmp) / "expectations.json",
+            )
+            paths = {entry["path"] for entry in metadata["source_manifest"]}
+            self.assertIn("canonical/runtime.py", paths)
+            self.assertTrue(paths.isdisjoint(forbidden))
+
     def test_source_snapshot_preflights_archive_and_expectations_overwrite_atomically(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo, protocol = self._source_repo(tmp)
@@ -289,6 +380,10 @@ class Stage2FreezeTest(unittest.TestCase):
             environment["packages"]["numpy"] = "9.9"
             with self.assertRaisesRegex(ValueError, "pip freeze"):
                 _strict_environment(environment)
+            environment = json.loads((smoke / "manifests" / "environment_manifest.json").read_text(encoding="utf-8"))
+            environment["nvidia_smi_gpu"] = "NVIDIA L4"
+            with self.assertRaisesRegex(ValueError, "GPU"):
+                _strict_environment(environment)
             command = _commands(smoke, smoke / "commands.json", mode="primary", gpu="NVIDIA A100-SXM4-40GB")
             self.assertEqual("primary", command["mode"])
             command["argv"].remove("--fresh")
@@ -311,12 +406,47 @@ class Stage2FreezeTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "identity|ID"):
                 _strict_data_manifest(data)
 
+            data = json.loads(data_path.read_text(encoding="utf-8"))
+            train = data["mnli"]["train"]
+            train["full_ids"].append("unexpected-100001")
+            train["selected_ids"].append("unexpected-100001")
+            train["full_count"] = train["selected_count"] = 100001
+            import hashlib
+            checksum = hashlib.sha256(json.dumps(train["full_ids"], ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+            train["full_ids_sha256"] = train["selected_ids_sha256"] = checksum
+            train["selected_limit"] = 100001
+            with self.assertRaisesRegex(ValueError, "count|provenance"):
+                _strict_data_manifest(data)
+
+            data = json.loads(data_path.read_text(encoding="utf-8"))
+            empty = data["ood"]["wanli"]
+            empty["full_ids"] = empty["selected_ids"] = []
+            empty["full_count"] = empty["selected_count"] = 0
+            empty_hash = hashlib.sha256(b"[]").hexdigest()
+            empty["full_ids_sha256"] = empty["selected_ids_sha256"] = empty_hash
+            with self.assertRaisesRegex(ValueError, "nonempty|count"):
+                _strict_data_manifest(data)
+
+            data = json.loads(data_path.read_text(encoding="utf-8"))
+            data["hans"]["dev"]["full_ids"] = list(data["hans"]["build"]["full_ids"])
+            data["hans"]["dev"]["selected_ids"] = list(data["hans"]["build"]["full_ids"])
+            data["hans"]["dev"]["full_ids_sha256"] = data["hans"]["build"]["full_ids_sha256"]
+            data["hans"]["dev"]["selected_ids_sha256"] = data["hans"]["build"]["full_ids_sha256"]
+            with self.assertRaisesRegex(ValueError, "disjoint"):
+                _strict_data_manifest(data)
+
     def test_notebook_and_cli_contracts_are_fail_fast_and_sidecar_bound(self):
         notebook = (ROOT / "notebooks" / "stage2_colab_a100_smoke.ipynb").read_text(encoding="utf-8")
+        parsed_notebook = json.loads(notebook)
+        for index, cell in enumerate(parsed_notebook["cells"]):
+            if cell["cell_type"] == "code":
+                compile("".join(cell["source"]), f"notebook-cell-{index}", "exec")
         self.assertNotIn("!python", notebook)
         self.assertNotIn("from canonical.freeze import", notebook)
         self.assertNotIn("subprocess.check_output", notebook)
         self.assertIn("package_stage2_evidence.py", notebook)
+        self.assertIn("verify_stage2_evidence.py", notebook)
+        self.assertNotIn("'docs','models','notebooks'", notebook)
         self.assertIn("source_manifest_sha256", notebook)
         self.assertIn("--source-expectations", notebook)
         self.assertIn("parents!=[head]", notebook)
@@ -326,9 +456,9 @@ class Stage2FreezeTest(unittest.TestCase):
         self.assertGreaterEqual(notebook.count("check=True"), 12)
         ordered = [
             "colab_a100_run1.events.jsonl", "--conditions','standard_lora",
-            "colab_a100_repeat_full_sr.events.jsonl", "--compare-repeat',repeat",
+            "colab_a100_repeat_full_sr.events.jsonl", "--root',repeat,'--conditions','full_sr", "--compare-repeat',repeat",
             "freeze_stage2_environment.py','--protocol", "freeze_stage2_environment.py','--verify-only",
-            "package_stage2_evidence.py",
+            "package_stage2_evidence.py','--repo-root", "verify_stage2_evidence.py','--archive",
         ]
         positions = [notebook.index(value) for value in ordered]
         self.assertEqual(positions, sorted(positions))
@@ -351,7 +481,7 @@ class Stage2FreezeTest(unittest.TestCase):
                     protocol, smoke, freeze, repo,
                     source_archive_path=archive, expectations_path=expectations,
                     commands_path=smoke / "commands.json",
-                    backend_factory=CanonicalManifestBackend, gpu_probe=self._fake_gpu_probe,
+                    backend_factory=CanonicalManifestBackend, environment_probe=self._environment_probe,
                 )
 
             self.assertEqual("canonical_v1", result["target_schema"])
@@ -369,7 +499,7 @@ class Stage2FreezeTest(unittest.TestCase):
                     protocol, smoke, Path(tmp) / "freeze", repo,
                     source_archive_path=archive, expectations_path=expectations,
                     commands_path=smoke / "commands.json",
-                    backend_factory=ZeroArgumentCanonicalManifestBackend, gpu_probe=self._fake_gpu_probe,
+                    backend_factory=ZeroArgumentCanonicalManifestBackend, environment_probe=self._environment_probe,
                 )
             self.assertEqual("pass", result["state"])
 
@@ -380,16 +510,18 @@ class Stage2FreezeTest(unittest.TestCase):
             freeze = Path(tmp) / "freeze"
             with patch("canonical.freeze.compare_a100_repeat", self._validated_a100):
                 build_freeze_bundle(protocol, smoke, freeze, repo, source_archive_path=archive, expectations_path=expectations,
-                                    commands_path=smoke / "commands.json", backend_factory=CanonicalManifestBackend, gpu_probe=self._fake_gpu_probe)
+                                    commands_path=smoke / "commands.json", backend_factory=CanonicalManifestBackend, environment_probe=self._environment_probe)
             inventory = json.loads((freeze / "checksum_inventory.json").read_text(encoding="utf-8"))
             self.assertNotIn("checksum_inventory.json", inventory["files"])
             for relative, expected in inventory["files"].items():
                 self.assertEqual(expected, sha256_file(freeze / relative))
 
             (freeze / "unexpected.txt").write_text("extra\n", encoding="utf-8")
+            _write_inventory(freeze)
             with self.assertRaisesRegex(ValueError, "extra"):
                 verify_freeze_bundle(freeze)
             (freeze / "unexpected.txt").unlink()
+            _write_inventory(freeze)
             protocol_snapshot = freeze / "protocol_snapshot" / "FROZEN_EXPERIMENT_PROTOCOL.md"
             protocol_snapshot.write_text("tampered\n", encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "hash mismatch"):
@@ -403,7 +535,7 @@ class Stage2FreezeTest(unittest.TestCase):
             with patch("canonical.freeze.compare_a100_repeat", self._validated_a100):
                 build_freeze_bundle(protocol, smoke, freeze, repo, source_archive_path=archive,
                                     expectations_path=expectations, commands_path=smoke / "commands.json",
-                                    backend_factory=CanonicalManifestBackend, gpu_probe=self._fake_gpu_probe)
+                                    backend_factory=CanonicalManifestBackend, environment_probe=self._environment_probe)
             data_path = freeze / "manifests" / "data_manifest.json"
             original_data = data_path.read_bytes()
             data = json.loads(original_data)
@@ -429,7 +561,7 @@ class Stage2FreezeTest(unittest.TestCase):
             write_json(smoke / "stage2_validation.json", {"state": "fail"})
             with self.assertRaisesRegex(ValueError, "validated"):
                 build_freeze_bundle(protocol, smoke, Path(tmp) / "freeze", repo, source_archive_path=archive, expectations_path=expectations,
-                                    commands_path=smoke / "commands.json", backend_factory=CanonicalManifestBackend, gpu_probe=self._fake_gpu_probe)
+                                    commands_path=smoke / "commands.json", backend_factory=CanonicalManifestBackend, environment_probe=self._environment_probe)
             with self.assertRaisesRegex(ValueError, "canonical_v1"):
                 build_freeze_bundle(protocol, smoke, Path(tmp) / "canonical_v1" / "freeze", repo,
                                     source_archive_path=archive, expectations_path=expectations, commands_path=smoke / "commands.json",
@@ -444,7 +576,7 @@ class Stage2FreezeTest(unittest.TestCase):
             with patch("canonical.freeze.compare_a100_repeat", self._validated_a100):
                 with self.assertRaisesRegex(ValueError, "new or empty"):
                     build_freeze_bundle(protocol, smoke, occupied, repo, source_archive_path=archive, expectations_path=expectations,
-                                        commands_path=smoke / "commands.json", backend_factory=CanonicalManifestBackend, gpu_probe=self._fake_gpu_probe)
+                                        commands_path=smoke / "commands.json", backend_factory=CanonicalManifestBackend, environment_probe=self._environment_probe)
 
     def test_freeze_binds_requested_protocol_and_commands_to_validated_a100_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -456,13 +588,13 @@ class Stage2FreezeTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "protocol"):
                     build_freeze_bundle(other_protocol, smoke, Path(tmp) / "bad-protocol", repo,
                                         source_archive_path=archive, expectations_path=expectations, commands_path=smoke / "commands.json",
-                                        backend_factory=CanonicalManifestBackend, gpu_probe=self._fake_gpu_probe)
+                                        backend_factory=CanonicalManifestBackend, environment_probe=self._environment_probe)
                 copied_commands = Path(tmp) / "copied_commands.json"
                 copied_commands.write_bytes((smoke / "commands.json").read_bytes())
                 with self.assertRaisesRegex(ValueError, "commands"):
                     build_freeze_bundle(protocol, smoke, Path(tmp) / "bad-commands", repo,
                                         source_archive_path=archive, expectations_path=expectations, commands_path=copied_commands,
-                                        backend_factory=CanonicalManifestBackend, gpu_probe=self._fake_gpu_probe)
+                                        backend_factory=CanonicalManifestBackend, environment_probe=self._environment_probe)
                 bad_expectations = Path(tmp) / "bad-expectations.json"
                 values = json.loads(expectations.read_text(encoding="utf-8"))
                 values["archive_sha256"] = "0" * 64
@@ -471,21 +603,104 @@ class Stage2FreezeTest(unittest.TestCase):
                     build_freeze_bundle(protocol, smoke, Path(tmp) / "bad-expectations", repo,
                                         source_archive_path=archive, expectations_path=bad_expectations,
                                         commands_path=smoke / "commands.json", backend_factory=CanonicalManifestBackend,
-                                        gpu_probe=self._fake_gpu_probe)
-                with self.assertRaisesRegex(ValueError, "live A100"):
+                                        environment_probe=self._environment_probe)
+                with self.assertRaisesRegex(ValueError, "live environment"):
                     build_freeze_bundle(protocol, smoke, Path(tmp) / "bad-probe", repo,
                                         source_archive_path=archive, expectations_path=expectations,
                                         commands_path=smoke / "commands.json", backend_factory=CanonicalManifestBackend,
-                                        gpu_probe=lambda: {"nvidia_smi":"NVIDIA L4", "torch_gpu":"NVIDIA L4", "torch_cuda":"12.8"})
+                                        environment_probe=lambda: {**self._environment_probe(), "gpu": "NVIDIA L4"})
                 origin_repo = Path(tmp) / "repo"
                 with self.assertRaisesRegex(ValueError, "source archive commit"):
                     build_freeze_bundle(protocol, smoke, Path(tmp) / "wrong-current-head", origin_repo,
                                         source_archive_path=archive, expectations_path=expectations,
                                         commands_path=smoke / "commands.json", backend_factory=CanonicalManifestBackend,
-                                        gpu_probe=self._fake_gpu_probe)
+                                        environment_probe=self._environment_probe)
 
+    def test_freeze_rejects_fully_rehashed_stored_environment_spoof_against_live_probe(self):
+        from tests.test_stage2_validation import _rehash_status
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, protocol, archive, expectations = self._execution_inputs(tmp)
+            primary, repeat = self._production_smoke_pair(repo)
+            repeat_environment_path = repeat / "manifests" / "environment_manifest.json"
+            original_repeat_environment = repeat_environment_path.read_bytes()
+            semantic_environment = json.loads(original_repeat_environment)
+            repeat_environment_path.write_text(json.dumps(semantic_environment, separators=(",", ":")) + "\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "repeat environment"):
+                build_freeze_bundle(
+                    protocol, primary, Path(tmp) / "byte-mismatch-freeze", repo,
+                    source_archive_path=archive, expectations_path=expectations,
+                    commands_path=primary / "commands.json", repeat_root=repeat,
+                    repeat_commands_path=repeat / "commands.json",
+                    backend_factory=CanonicalManifestBackend, environment_probe=self._environment_probe,
+                )
+            repeat_environment_path.write_bytes(original_repeat_environment)
+            spoof = {
+                "schema_version": "canonical_environment_manifest_v1", "gpu": "NVIDIA A100-SXM4-40GB",
+                "torch_gpu": "NVIDIA A100-SXM4-40GB", "nvidia_smi_gpu": "NVIDIA A100-SXM4-40GB",
+                "python": "3.12.9", "python_implementation": "CPython", "platform": "Linux-spoof",
+                "cuda_runtime": "99.0", "cuda_driver": "999.0",
+                "packages": {"torch": "2.11.0", "transformers": "9.0", "datasets": "9.0", "numpy": "9.0"},
+                "pip_freeze": ["datasets==9.0", "numpy==9.0", "torch==2.11.0", "transformers==9.0"],
+            }
+            for root in (primary, repeat):
+                environment_path = root / "manifests" / "environment_manifest.json"
+                write_json(environment_path, spoof)
+                environment_hash = sha256_file(environment_path)
+                for manifest_path in (root / "seed_42").glob("*/run_manifest.json"):
+                    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    manifest["environment_manifest_sha256"] = environment_hash
+                    write_json(manifest_path, manifest)
+                    _rehash_status(manifest_path.parent)
+            with self.assertRaisesRegex(ValueError, "live environment"):
+                build_freeze_bundle(
+                    protocol, primary, Path(tmp) / "spoof-freeze", repo,
+                    source_archive_path=archive, expectations_path=expectations,
+                    commands_path=primary / "commands.json", repeat_root=repeat,
+                    repeat_commands_path=repeat / "commands.json",
+                    backend_factory=CanonicalManifestBackend, environment_probe=self._environment_probe,
+                )
+
+    def test_freeze_rejects_all_six_rehashed_manifest_command_and_dirty_spoofs(self):
+        from tests.test_stage2_validation import _rehash_status
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, protocol, archive, expectations = self._execution_inputs(tmp)
+            primary, repeat = self._production_smoke_pair(repo)
+            manifests = list((primary / "seed_42").glob("*/run_manifest.json")) + list((repeat / "seed_42").glob("*/run_manifest.json"))
+            self.assertEqual(6, len(manifests))
+            for manifest_path in manifests:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                manifest["command"] = ["different_program"]
+                write_json(manifest_path, manifest)
+                _rehash_status(manifest_path.parent)
+            with self.assertRaisesRegex(ValueError, "command"):
+                build_freeze_bundle(
+                    protocol, primary, Path(tmp) / "command-freeze", repo,
+                    source_archive_path=archive, expectations_path=expectations,
+                    commands_path=primary / "commands.json", repeat_root=repeat,
+                    repeat_commands_path=repeat / "commands.json",
+                    backend_factory=CanonicalManifestBackend, environment_probe=self._environment_probe,
+                )
+
+            for root in (primary, repeat):
+                argv = json.loads((root / "commands.json").read_text(encoding="utf-8"))["argv"]
+                for manifest_path in (root / "seed_42").glob("*/run_manifest.json"):
+                    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    manifest["command"] = argv
+                    manifest["git"]["dirty"] = True
+                    write_json(manifest_path, manifest)
+                    _rehash_status(manifest_path.parent)
+            with self.assertRaisesRegex(ValueError, "clean|dirty"):
+                build_freeze_bundle(
+                    protocol, primary, Path(tmp) / "dirty-freeze", repo,
+                    source_archive_path=archive, expectations_path=expectations,
+                    commands_path=primary / "commands.json", repeat_root=repeat,
+                    repeat_commands_path=repeat / "commands.json",
+                    backend_factory=CanonicalManifestBackend, environment_probe=self._environment_probe,
+                )
     def test_dependency_light_cli_help(self):
-        for script in ("package_stage2_source.py", "freeze_stage2_environment.py", "package_stage2_evidence.py"):
+        for script in ("package_stage2_source.py", "freeze_stage2_environment.py", "package_stage2_evidence.py", "verify_stage2_evidence.py"):
             result = subprocess.run([sys.executable, script, "--help"], cwd=ROOT, text=True, capture_output=True)
             self.assertEqual(0, result.returncode, result.stderr)
 
@@ -525,14 +740,12 @@ class Stage2FreezeTest(unittest.TestCase):
                 source_archive_path=source_archive, expectations_path=expectations,
                 commands_path=primary / "commands.json", repeat_root=repeat,
                 repeat_commands_path=repeat / "commands.json",
-                backend_factory=CanonicalManifestBackend, gpu_probe=self._fake_gpu_probe,
+                backend_factory=CanonicalManifestBackend, environment_probe=self._environment_probe,
             )
             monitors = repo / "ties_results" / ".stage2_monitor"
             monitors.mkdir(parents=True)
-            for name in ("colab_a100_run1.events.jsonl", "colab_a100_repeat_full_sr.events.jsonl"):
-                (monitors / name).write_text('{"state":"pass"}\n', encoding="utf-8")
-            for suffix in (".pt", ".pth", ".ckpt", ".bin", ".safetensors"):
-                (primary / f"forbidden{suffix}").write_bytes(b"model weights")
+            self._write_monitor(monitors / "colab_a100_run1.events.jsonl", json.loads((primary / "commands.json").read_text(encoding="utf-8"))["argv"], repo)
+            self._write_monitor(monitors / "colab_a100_repeat_full_sr.events.jsonl", json.loads((repeat / "commands.json").read_text(encoding="utf-8"))["argv"], repo)
             (primary / "source_transport.zip").write_bytes(b"not source evidence")
 
             evidence = Path(tmp) / "stage2_a100_evidence.zip"
@@ -540,8 +753,11 @@ class Stage2FreezeTest(unittest.TestCase):
             self.assertEqual("pass", result["state"])
             with zipfile.ZipFile(evidence) as archive:
                 names = archive.namelist()
-                inventory = json.loads(archive.read("evidence_checksum_inventory.json"))
-            self.assertEqual(set(names), set(inventory["files"]) | {"evidence_checksum_inventory.json"})
+                inventory_name = "ties_results/stage2_smoke/stage2_evidence_inventory.json"
+                inventory = json.loads(archive.read(inventory_name))
+            self.assertEqual(set(names), set(inventory["files"]) | {inventory_name})
+            self.assertEqual("stage2_evidence_inventory_v2", inventory["schema_version"])
+            self.assertEqual(2, len(inventory["omitted_weights"]))
             self.assertTrue(any(name.endswith("source_expectations.json") for name in names))
             self.assertFalse(any(Path(name).suffix.casefold() in {".pt", ".pth", ".ckpt", ".bin", ".safetensors", ".zip"} for name in names))
 
@@ -551,6 +767,14 @@ class Stage2FreezeTest(unittest.TestCase):
                 build_evidence_archive(repo, Path(tmp) / "extra.zip", expectations_path=expectations)
 
             extra.unlink()
+            for index, suffix in enumerate((".pt", ".pth", ".ckpt", ".bin", ".safetensors")):
+                untracked_weight = primary / f"untracked{suffix}"
+                untracked_weight.write_bytes(b"untracked weight")
+                try:
+                    with self.assertRaisesRegex(ValueError, "untracked model weight"):
+                        build_evidence_archive(repo, Path(tmp) / f"weight-{index}.zip", expectations_path=expectations)
+                finally:
+                    untracked_weight.unlink()
             missing_members = (
                 primary / "seed_42" / "full_sr" / "metrics.json",
                 primary / "seed_42" / "full_sr" / "hans_predictions.jsonl",
@@ -576,6 +800,143 @@ class Stage2FreezeTest(unittest.TestCase):
             write_json(bad_expectations, sidecar)
             with self.assertRaisesRegex(ValueError, "expectations mismatch"):
                 build_evidence_archive(repo, Path(tmp) / "expectations-mismatch.zip", expectations_path=bad_expectations)
+
+    def test_evidence_transport_verifies_and_extracts_fresh_without_model_weights(self):
+        from canonical.evidence_transport import verify_evidence_archive
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, protocol, source_archive, expectations = self._execution_inputs(tmp)
+            primary, repeat = self._production_smoke_pair(repo)
+            freeze = repo / "ties_results" / "stage2_smoke" / "freeze_bundle"
+            build_freeze_bundle(
+                protocol, primary, freeze, repo,
+                source_archive_path=source_archive, expectations_path=expectations,
+                commands_path=primary / "commands.json", repeat_root=repeat,
+                repeat_commands_path=repeat / "commands.json",
+                backend_factory=CanonicalManifestBackend, environment_probe=self._environment_probe,
+            )
+            monitors = repo / "ties_results" / ".stage2_monitor"
+            self._write_monitor(monitors / "colab_a100_run1.events.jsonl", json.loads((primary / "commands.json").read_text(encoding="utf-8"))["argv"], repo)
+            self._write_monitor(monitors / "colab_a100_repeat_full_sr.events.jsonl", json.loads((repeat / "commands.json").read_text(encoding="utf-8"))["argv"], repo)
+            archive = Path(tmp) / "evidence.zip"
+            build_evidence_archive(repo, archive, expectations_path=expectations)
+
+            extracted = Path(tmp) / "fresh-extract"
+            result = verify_evidence_archive(archive, extract_dir=extracted)
+
+            self.assertEqual("pass", result["state"])
+            self.assertTrue((extracted / "ties_results" / "stage2_smoke" / "stage2_evidence_inventory.json").is_file())
+            self.assertFalse(any(path.suffix.casefold() in {".pt", ".pth", ".ckpt", ".bin", ".safetensors"} for path in extracted.rglob("*")))
+            with self.assertRaisesRegex(ValueError, "overwrite"):
+                verify_evidence_archive(archive, extract_dir=extracted)
+
+    def test_evidence_transport_rejects_semantic_tamper_after_inventory_rebuild(self):
+        from canonical.evidence_transport import INVENTORY_MEMBER, verify_evidence_archive
+        from hashlib import sha256
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, protocol, source_archive, expectations = self._execution_inputs(tmp)
+            primary, repeat = self._production_smoke_pair(repo)
+            freeze = repo / "ties_results" / "stage2_smoke" / "freeze_bundle"
+            build_freeze_bundle(
+                protocol, primary, freeze, repo,
+                source_archive_path=source_archive, expectations_path=expectations,
+                commands_path=primary / "commands.json", repeat_root=repeat,
+                repeat_commands_path=repeat / "commands.json",
+                backend_factory=CanonicalManifestBackend, environment_probe=self._environment_probe,
+            )
+            monitors = repo / "ties_results" / ".stage2_monitor"
+            self._write_monitor(monitors / "colab_a100_run1.events.jsonl", json.loads((primary / "commands.json").read_text(encoding="utf-8"))["argv"], repo)
+            self._write_monitor(monitors / "colab_a100_repeat_full_sr.events.jsonl", json.loads((repeat / "commands.json").read_text(encoding="utf-8"))["argv"], repo)
+            source = Path(tmp) / "evidence.zip"
+            build_evidence_archive(repo, source, expectations_path=expectations)
+
+            def inventory(members):
+                return json.loads(members[INVENTORY_MEMBER])
+
+            def save(members, value):
+                members[INVENTORY_MEMBER] = (json.dumps(value, sort_keys=True, allow_nan=False) + "\n").encode()
+
+            def add_extra(members):
+                name = "ties_results/stage2_smoke/colab_a100_run1/unexpected.json"
+                members[name] = b"{}\n"
+                value = inventory(members); value["files"][name] = sha256(members[name]).hexdigest(); save(members, value)
+
+            def remove_monitor(members):
+                name = "ties_results/.stage2_monitor/colab_a100_repeat_full_sr.events.jsonl"
+                del members[name]
+                value = inventory(members); del value["files"][name]; save(members, value)
+
+            def include_weight(members):
+                value = inventory(members); entry = value["omitted_weights"][0]
+                members[entry["path"]] = b"transported weight"
+                value["files"][entry["path"]] = sha256(members[entry["path"]]).hexdigest(); save(members, value)
+
+            def spoof_omitted(members):
+                value = inventory(members); value["omitted_weights"][0]["sha256"] = "0" * 64; save(members, value)
+
+            def spoof_expectations(members):
+                name = "ties_results/stage2_smoke/source_expectations.json"
+                value = json.loads(members[name]); value["origin_commit"] = "0" * 40
+                members[name] = (json.dumps(value, sort_keys=True) + "\n").encode()
+                inv = inventory(members); inv["files"][name] = sha256(members[name]).hexdigest(); save(members, inv)
+
+            def add_freeze_extra(members):
+                name = "ties_results/stage2_smoke/freeze_bundle/unexpected.txt"
+                members[name] = b"extra\n"
+                value = inventory(members); value["files"][name] = sha256(members[name]).hexdigest(); save(members, value)
+
+            for index, transform in enumerate((add_extra, remove_monitor, include_weight, spoof_omitted, spoof_expectations, add_freeze_extra)):
+                with self.subTest(transform=transform.__name__):
+                    tampered = Path(tmp) / f"tampered-{index}.zip"
+                    self._rewrite_evidence(source, tampered, transform)
+                    with self.assertRaises((ValueError, FileNotFoundError)):
+                        verify_evidence_archive(tampered)
+
+            symlink_archive = Path(tmp) / "symlink.zip"
+            with zipfile.ZipFile(source) as archive, zipfile.ZipFile(symlink_archive, "w") as target:
+                for info in archive.infolist():
+                    target.writestr(info.filename, archive.read(info.filename))
+                link = zipfile.ZipInfo("ties_results/stage2_smoke/link")
+                link.create_system = 3
+                link.external_attr = (0o120777 << 16)
+                target.writestr(link, "target")
+            with self.assertRaisesRegex(ValueError, "unsafe"):
+                verify_evidence_archive(symlink_archive)
+
+    def test_monitor_transport_schema_rejects_failure_policy_and_command_spoofs(self):
+        from canonical.evidence_transport import validate_monitor_evidence
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            command = ["python", "run_stage2_smoke.py", "--mode", "primary"]
+            monitor = root / "monitor.jsonl"
+            self._write_monitor(monitor, command, root)
+            validate_monitor_evidence(monitor, expected_command=command)
+
+            cases = {
+                "empty": "",
+                "malformed": "{bad json}\n",
+                "crashed": json.dumps({"event":"CRASHED","timestamp":0,"elapsed_seconds":0,"command":command,"cwd":str(root),"returncode":1}) + "\n",
+                "hard-timeout": json.dumps({"event":"HARD_TIMEOUT","timestamp":0,"elapsed_seconds":0,"command":command,"cwd":str(root)}) + "\n",
+                "fatal": json.dumps({"event":"FATAL_PATTERN","timestamp":0,"elapsed_seconds":0,"command":command,"cwd":str(root)}) + "\n",
+            }
+            for name, payload in cases.items():
+                with self.subTest(name=name):
+                    monitor.write_text(payload, encoding="utf-8")
+                    with self.assertRaises(ValueError):
+                        validate_monitor_evidence(monitor, expected_command=command)
+
+            self._write_monitor(monitor, command, root)
+            records = [json.loads(line) for line in monitor.read_text(encoding="utf-8").splitlines()]
+            records[0]["policy"]["stall_seconds"] = 1
+            monitor.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "policy"):
+                validate_monitor_evidence(monitor, expected_command=command)
+
+            self._write_monitor(monitor, ["different_program"], root)
+            with self.assertRaisesRegex(ValueError, "command"):
+                validate_monitor_evidence(monitor, expected_command=command)
 
 
 if __name__ == "__main__":

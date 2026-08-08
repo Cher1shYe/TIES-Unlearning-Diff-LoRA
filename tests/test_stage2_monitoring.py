@@ -111,6 +111,13 @@ class Stage2MonitoringTest(unittest.TestCase):
 
     def test_production_policy_is_frozen(self):
         self.assertEqual(PRODUCTION_POLICY, MonitorPolicy(300, 3600, 43200))
+        process = FakeProcess(exit_after_checks=1)
+        result, _ = self._run(process, policy=PRODUCTION_POLICY)
+        self.assertEqual(0, result)
+        self.assertEqual(
+            {"check_interval_seconds": 300, "stall_seconds": 3600, "hard_timeout_seconds": 43200},
+            self._records()[0]["policy"],
+        )
 
     def test_completion_mirrors_child_return_code_and_never_uses_shell(self):
         process = FakeProcess(exit_after_checks=1, exit_code=7)

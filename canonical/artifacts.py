@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import platform
 import subprocess
+import sys
 import tempfile
 from numbers import Integral, Real
 from typing import Any, Iterable, Mapping
@@ -125,13 +126,14 @@ def collect_git_metadata(repo_root: os.PathLike[str] | str = ".") -> dict[str, A
 
 
 def collect_environment_metadata() -> dict[str, Any]:
+    """Collect the complete runtime record used by runner and freeze probes."""
     packages = {}
     for distribution in ("torch", "transformers", "datasets", "numpy"):
         try:
             packages[distribution] = metadata.version(distribution)
         except metadata.PackageNotFoundError:
             packages[distribution] = None
-    return {
+    environment = {
         "python": platform.python_version(),
         "python_implementation": platform.python_implementation(),
         "platform": platform.platform(),
@@ -139,4 +141,37 @@ def collect_environment_metadata() -> dict[str, Any]:
         "cuda_runtime": None,
         "cuda_driver": None,
         "gpu": None,
+        "torch_gpu": None,
+        "nvidia_smi_gpu": None,
+        "pip_freeze": None,
     }
+    try:
+        import torch
+
+        environment["cuda_runtime"] = str(torch.version.cuda) if torch.version.cuda is not None else None
+        if torch.cuda.is_available():
+            environment["torch_gpu"] = torch.cuda.get_device_name(0)
+            environment["gpu"] = environment["torch_gpu"]
+    except (ImportError, RuntimeError):
+        pass
+    try:
+        lines = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name,driver_version", "--format=csv,noheader"],
+            check=True, capture_output=True, text=True,
+        ).stdout.splitlines()
+        if lines:
+            gpu, driver = (part.strip() for part in lines[0].split(",", 1))
+            environment["nvidia_smi_gpu"] = gpu
+            if environment["gpu"] is None:
+                environment["gpu"] = gpu
+            environment["cuda_driver"] = driver
+    except (OSError, subprocess.CalledProcessError, ValueError):
+        pass
+    try:
+        environment["pip_freeze"] = subprocess.run(
+            [sys.executable, "-m", "pip", "freeze"],
+            check=True, capture_output=True, text=True,
+        ).stdout.splitlines()
+    except (OSError, subprocess.CalledProcessError):
+        pass
+    return environment
