@@ -54,7 +54,7 @@ _FREEZE_SPLIT_PAYLOAD = {
     "small_strata": [],
 }
 TEST_FREEZE_HANS_ANCHORS = {
-    "schema_version": "hans_official_semantic_anchors_v1",
+    "schema_version": "hans_official_semantic_anchors_v2",
     "split_checksum": _digest(_FREEZE_SPLIT_PAYLOAD),
     "partitions": {
         "build": {
@@ -194,8 +194,8 @@ class ZeroArgumentCanonicalManifestBackend(CanonicalManifestBackend):
 class Stage2FreezeTest(unittest.TestCase):
     def setUp(self):
         self._contract_patches = (
-            patch("canonical.freeze.HANS_OFFICIAL_ANCHORS_V1", TEST_FREEZE_HANS_ANCHORS),
-            patch("canonical.stage2_validation.HANS_OFFICIAL_ANCHORS_V1", TEST_HANS_ANCHORS),
+            patch("canonical.freeze.HANS_OFFICIAL_ANCHORS_V2", TEST_FREEZE_HANS_ANCHORS),
+            patch("canonical.stage2_validation.HANS_OFFICIAL_ANCHORS_V2", TEST_HANS_ANCHORS),
             patch("canonical.stage2_validation._STAGE2_DATA_PROFILE", TEST_STAGE2_PROFILE),
         )
         for contract_patch in self._contract_patches:

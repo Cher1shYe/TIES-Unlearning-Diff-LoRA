@@ -298,6 +298,11 @@ class DataIdentityManifestTest(unittest.TestCase):
                 "subcase": "train-build-case",
                 "sentence1": "train-build-premise",
                 "sentence2": "train-build-hypothesis",
+                "sentence1_binary_parse": "( train-build-premise )",
+                "sentence2_binary_parse": "( train-build-hypothesis )",
+                "sentence1_parse": "(ROOT ( train-build-premise ))",
+                "sentence2_parse": "(ROOT ( train-build-hypothesis ))",
+                "template": "temp_train_build",
             }],
             "dev_records": [{
                 "pairID": "ex1",
@@ -307,6 +312,11 @@ class DataIdentityManifestTest(unittest.TestCase):
                 "subcase": "train-dev-case",
                 "sentence1": "train-dev-premise",
                 "sentence2": "train-dev-hypothesis",
+                "sentence1_binary_parse": "( train-dev-premise )",
+                "sentence2_binary_parse": "( train-dev-hypothesis )",
+                "sentence1_parse": "(ROOT ( train-dev-premise ))",
+                "sentence2_parse": "(ROOT ( train-dev-hypothesis ))",
+                "template": "temp_train_dev",
             }],
             "evaluation_records": [
                 {
@@ -317,6 +327,11 @@ class DataIdentityManifestTest(unittest.TestCase):
                     "subcase": f"{heuristic}-case",
                     "sentence1": f"evaluation-premise-{index}",
                     "sentence2": f"evaluation-hypothesis-{index}",
+                    "sentence1_binary_parse": f"( evaluation-premise-{index} )",
+                    "sentence2_binary_parse": f"( evaluation-hypothesis-{index} )",
+                    "sentence1_parse": f"(ROOT ( evaluation-premise-{index} ))",
+                    "sentence2_parse": f"(ROOT ( evaluation-hypothesis-{index} ))",
+                    "template": f"temp_evaluation_{index}",
                 }
                 for index, (label, heuristic) in enumerate(
                     (
@@ -391,9 +406,25 @@ class DataIdentityManifestTest(unittest.TestCase):
             self.assertEqual(
                 {
                     "build", "dev", "evaluation", "split_integrity",
-                    "content_integrity", "selection_integrity",
+                    "content_integrity", "selection_integrity", "source_integrity",
                 },
                 set(manifest["hans"]),
+            )
+            self.assertEqual(
+                "hans_source_integrity_v1",
+                manifest["hans"]["source_integrity"]["schema_version"],
+            )
+            self.assertEqual(
+                {"train", "evaluation"},
+                set(manifest["hans"]["source_integrity"]["sources"]),
+            )
+            self.assertEqual(
+                2,
+                manifest["hans"]["source_integrity"]["sources"]["train"]["count"],
+            )
+            self.assertEqual(
+                4,
+                manifest["hans"]["source_integrity"]["sources"]["evaluation"]["count"],
             )
             self.assertEqual({"esnli", "anli", "snli_hard", "wanli"}, set(manifest["ood"]))
             self.assertEqual(4, manifest["mnli"]["train"]["full_count"])

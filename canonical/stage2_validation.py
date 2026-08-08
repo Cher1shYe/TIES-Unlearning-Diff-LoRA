@@ -13,7 +13,7 @@ from typing import Any, Mapping, Sequence
 
 from canonical.artifacts import sha256_file
 from canonical.data import (
-    HANS_OFFICIAL_ANCHORS_V1,
+    HANS_OFFICIAL_ANCHORS_V2,
     hans_manifest_identity_summary,
     validate_hans_manifest_identities,
 )
@@ -465,7 +465,7 @@ def _validate_stage2_data_manifest(data_manifest: Any) -> list[str]:
         data_manifest["hans"],
         expected_seed=42,
         expected_selection_cap=_STAGE2_DATA_PROFILE[("hans", "evaluation")][6],
-        official_anchors=HANS_OFFICIAL_ANCHORS_V1,
+        official_anchors=HANS_OFFICIAL_ANCHORS_V2,
     )
 
 

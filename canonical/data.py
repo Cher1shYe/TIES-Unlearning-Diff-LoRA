@@ -505,13 +505,21 @@ def validate_hans_manifest_identities(
         full_partitions["dev"],
         full_partitions["evaluation"],
     )
-    if set(hans) != {
+    required_integrity_keys = {
         *expected_sources,
         "split_integrity",
         "content_integrity",
         "selection_integrity",
-    }:
+    }
+    if set(hans) - {"source_integrity"} != required_integrity_keys:
         raise ValueError("HANS split/content/selection integrity objects are missing or unexpected")
+    if "source_integrity" in hans:
+        # Informational-but-verified: when the manifest records parsed-source
+        # evidence, it must match the frozen official 11-field anchors.
+        validate_hans_source_integrity_manifest(
+            hans["source_integrity"],
+            official_anchors,
+        )
     _validate_hans_split_integrity_manifest(
         hans["split_integrity"],
         {name: full_partitions[name] for name in ("build", "dev")},
@@ -679,7 +687,7 @@ def _validate_official_hans_anchors(
     *,
     expected_selection_cap: int | None | object,
 ) -> None:
-    if anchors.get("schema_version") != "hans_official_semantic_anchors_v1":
+    if anchors.get("schema_version") != "hans_official_semantic_anchors_v2":
         raise ValueError("official HANS semantic anchors schema is invalid")
     split = hans["split_integrity"]
     if split.get("split_checksum") != anchors.get("split_checksum"):

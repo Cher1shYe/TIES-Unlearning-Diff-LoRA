@@ -15,6 +15,7 @@ from canonical.conditions import CanonicalCondition
 from canonical.data import (
     build_hans_content_integrity_manifest,
     build_hans_selection_integrity,
+    build_hans_source_integrity_manifest,
     hans_manifest_identity_summary,
     sample_dataset,
     select_hans_evaluation_records,
@@ -161,6 +162,10 @@ class RealCanonicalBackend:
             },
         )
         hans_entries["split_integrity"] = dict(hans["split_integrity"])
+        hans_entries["source_integrity"] = build_hans_source_integrity_manifest(
+            [*hans_source_records["build"], *hans_source_records["dev"]],
+            hans_source_records["evaluation"],
+        )
         hans_entries["selection_integrity"] = build_hans_selection_integrity(
             selected_evaluation_source,
             hans_entries["evaluation"]["selected_ids"],

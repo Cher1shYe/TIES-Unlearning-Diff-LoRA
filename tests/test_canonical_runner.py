@@ -253,17 +253,23 @@ class RealCanonicalBackendContractTest(unittest.TestCase):
                     "build_records": [{
                         "pairID": "ex0", "canonical_pair_id": "hans_train::ex0",
                         "gold_label": "entailment", "heuristic": "lexical_overlap",
-                        "subcase": "build", "sentence1": "build premise", "sentence2": "build hypothesis",
+                        "subcase": "build", "sentence1": "build premise", "sentence2": "build hypothesis",                        "sentence1_binary_parse": "( build premise )", "sentence2_binary_parse": "( build hypothesis )",
+                        "sentence1_parse": "(ROOT ( build premise ))", "sentence2_parse": "(ROOT ( build hypothesis ))",
+                        "template": "temp_build",
                     }],
                     "dev_records": [{
                         "pairID": "ex1", "canonical_pair_id": "hans_train::ex1",
                         "gold_label": "non-entailment", "heuristic": "subsequence",
-                        "subcase": "dev", "sentence1": "dev premise", "sentence2": "dev hypothesis",
+                        "subcase": "dev", "sentence1": "dev premise", "sentence2": "dev hypothesis",                        "sentence1_binary_parse": "( dev premise )", "sentence2_binary_parse": "( dev hypothesis )",
+                        "sentence1_parse": "(ROOT ( dev premise ))", "sentence2_parse": "(ROOT ( dev hypothesis ))",
+                        "template": "temp_dev",
                     }],
                     "evaluation_records": [{
                         "pairID": "ex0", "canonical_pair_id": "hans_evaluation::ex0",
                         "gold_label": "non-entailment", "heuristic": "constituent",
-                        "subcase": "evaluation", "sentence1": "evaluation premise", "sentence2": "evaluation hypothesis",
+                        "subcase": "evaluation", "sentence1": "evaluation premise", "sentence2": "evaluation hypothesis",                        "sentence1_binary_parse": "( evaluation premise )", "sentence2_binary_parse": "( evaluation hypothesis )",
+                        "sentence1_parse": "(ROOT ( evaluation premise ))", "sentence2_parse": "(ROOT ( evaluation hypothesis ))",
+                        "template": "temp_eval",
                     }],
                     "split_integrity": {
                         "schema_version": "hans_split_integrity_v1",

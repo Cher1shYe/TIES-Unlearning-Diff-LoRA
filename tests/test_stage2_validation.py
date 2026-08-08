@@ -14,7 +14,11 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from canonical.artifacts import sha256_file, write_json, write_jsonl
-from canonical.data import build_hans_selection_integrity, hans_manifest_identity_summary
+from canonical.data import (
+    build_hans_selection_integrity,
+    hans_manifest_identity_summary,
+    validate_hans_manifest_identities,
+)
 from canonical.hans import aggregate_hans_predictions
 from canonical.runner import _METHOD_OUTPUTS, _SHARED_OUTPUTS
 from canonical.stage2_validation import (
@@ -213,7 +217,7 @@ def _fixture_hans_manifest():
 
 TEST_HANS_MANIFEST = _fixture_hans_manifest()
 TEST_HANS_ANCHORS = {
-    "schema_version": "hans_official_semantic_anchors_v1",
+    "schema_version": "hans_official_semantic_anchors_v2",
     "split_checksum": TEST_HANS_MANIFEST["split_integrity"]["split_checksum"],
     "partitions": {
         name: {
@@ -258,7 +262,7 @@ TEST_STAGE2_PROFILE = {
 def _controlled_contract():
     return (
         patch("canonical.stage2_validation._STAGE2_DATA_PROFILE", TEST_STAGE2_PROFILE),
-        patch("canonical.stage2_validation.HANS_OFFICIAL_ANCHORS_V1", TEST_HANS_ANCHORS),
+        patch("canonical.stage2_validation.HANS_OFFICIAL_ANCHORS_V2", TEST_HANS_ANCHORS),
     )
 
 
@@ -538,33 +542,38 @@ def _create_smoke_root(
 
 
 class Stage2ValidationTest(unittest.TestCase):
-    def test_v4_manifest_without_record_computed_source_integrity_is_rejected(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = _create_smoke_root(Path(tmp) / "v4-source-bypass")
-
-            with self.assertRaisesRegex(ValueError, "v5|source.integrity|data manifest"):
-                validate_smoke_root(
-                    root,
-                    expected_conditions=PRIMARY_CONDITIONS,
-                    canonical_dir=Path(tmp) / "canonical_v1",
-                )
-
-    def test_manifest_identity_audit_requires_source_integrity_summary(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = _create_smoke_root(Path(tmp) / "missing-source-summary")
-            audit = root / "manifests" / "data_access.jsonl"
-            events = [
-                json.loads(line)
-                for line in audit.read_text(encoding="utf-8").splitlines()
-            ]
-            expected_summary = hans_manifest_identity_summary(TEST_HANS_MANIFEST)
-
-            with self.assertRaisesRegex(ValueError, "source.integrity|manifest identity"):
-                _validate_manifest_identity_audit(
-                    events,
-                    source=audit,
-                    expected_summary=expected_summary,
-                )
+    def test_manifest_with_tampered_source_integrity_is_rejected(self):
+        # Addendum v1.1: source integrity is informational-but-verified.  When a
+        # manifest carries parsed-source evidence, it must match the frozen v2
+        # anchors; a tampered digest must fail closed even though manifests
+        # without the section remain valid.
+        tampered_anchors = deepcopy(TEST_HANS_ANCHORS)
+        tampered_anchors["source_integrity"] = {
+            "train": {"count": 4, "records_sha256": "0" * 64},
+            "evaluation": {"count": 2, "records_sha256": "1" * 64},
+        }
+        manifest = deepcopy(TEST_HANS_MANIFEST)
+        manifest["source_integrity"] = {
+            "schema_version": "hans_source_integrity_v1",
+            "algorithm": "sha256_canonical_json_utf8_v1",
+            "fields": [
+                "gold_label", "sentence1_binary_parse", "sentence2_binary_parse",
+                "sentence1_parse", "sentence2_parse", "sentence1", "sentence2",
+                "pairID", "heuristic", "subcase", "template",
+            ],
+            "ordering": "numeric_pair_id_then_raw_pair_id_v1",
+            "sources": {
+                "train": {"count": 4, "records_sha256": "f" * 64},
+                "evaluation": {"count": 2, "records_sha256": "1" * 64},
+            },
+        }
+        with self.assertRaisesRegex(ValueError, "source integrity"):
+            validate_hans_manifest_identities(
+                manifest,
+                expected_seed=42,
+                expected_selection_cap=2,
+                official_anchors=tampered_anchors,
+            )
 
     def test_two_id_root_labelled_stage2_smoke_profile_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:

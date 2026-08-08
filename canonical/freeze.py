@@ -14,7 +14,7 @@ from datetime import datetime
 from hashlib import sha256
 
 from canonical.artifacts import collect_environment_metadata, sha256_file, write_json
-from canonical.data import HANS_OFFICIAL_ANCHORS_V1, validate_hans_manifest_identities
+from canonical.data import HANS_OFFICIAL_ANCHORS_V2, validate_hans_manifest_identities
 from canonical.source_package import _EXCLUSIONS_METADATA, _allowed_source, _clean_git_metadata, verify_source_package
 from canonical.stage2_validation import compare_a100_repeat
 
@@ -176,7 +176,7 @@ def _strict_data_manifest(data: dict[str, Any]) -> None:
         data["hans"],
         expected_seed=42,
         expected_selection_cap=None,
-        official_anchors=HANS_OFFICIAL_ANCHORS_V1,
+        official_anchors=HANS_OFFICIAL_ANCHORS_V2,
     )
 
 
