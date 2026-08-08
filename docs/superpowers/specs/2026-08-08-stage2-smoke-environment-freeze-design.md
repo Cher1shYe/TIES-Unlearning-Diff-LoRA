@@ -160,13 +160,19 @@ A generated Colab notebook is a thin executor, not a second implementation. It:
 
 1. verifies that the assigned GPU name contains `A100` and stops otherwise;
 2. installs the tested dependency set;
-3. unpacks an archive of the exact local Git commit and confirms the commit identifier;
+3. verifies an external expectations sidecar, then unpacks a source-only bundle whose deterministic parentless `execution_commit` contains exactly allow-listed blobs from the clean `origin_commit` and no runtime artifacts or origin history;
 4. runs unit tests;
 5. executes the A100 smoke run and validator;
 6. repeats `full_sr` from a fresh tiny training path in the same runtime;
 7. compares HANS non-entailment accuracy using the frozen absolute 0.005 tolerance;
 8. captures `pip freeze`, Python, PyTorch, Transformers, Datasets, NumPy, CUDA runtime/driver, GPU, command, timestamps, and logs; and
 9. exports a checksum inventory for download into the worktree.
+
+The local Task 8 run and Colab Task 9 run clone the same archive, configure
+checkout newline conversion off, and execute the identical recorded
+`execution_commit`; Task 9 must not repackage from the execution clone. The
+external sidecar remains outside the source ZIP and is preserved in the final
+evidence inventory.
 
 Only source code and experiment artifacts are transferred. No manuscript, private notes, credentials, or historical result corpus is uploaded.
 
@@ -178,7 +184,7 @@ Create a repository-local isolated environment rather than modifying the MSYS2 P
 
 ### 4.2 Canonical A100 freeze
 
-The A100 runtime is the canonical training environment. The freeze bundle records both the primary and fresh-repeat immutable command records, and their commit chain must equal the clean source-package `HEAD`. The freeze bundle records:
+The A100 runtime is the canonical training environment. The freeze bundle records both the primary and fresh-repeat immutable command records, and their commit chain must equal the clean source-package `execution_commit`; the separate clean `origin_commit` remains frozen as provenance. The freeze bundle records:
 
 - exact Python and package versions;
 - PyTorch CUDA runtime and NVIDIA driver;

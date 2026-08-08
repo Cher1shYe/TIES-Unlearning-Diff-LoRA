@@ -600,14 +600,16 @@ git commit -m "feat: monitor canonical jobs without auto tuning"
 - Create: `canonical/source_package.py`
 - Create: `freeze_stage2_environment.py`
 - Create: `package_stage2_source.py`
+- Create: `package_stage2_evidence.py`
 - Create: `notebooks/stage2_colab_a100_smoke.ipynb`
 - Create: `tests/test_stage2_freeze.py`
 - Modify: `.gitignore`
 
 **Interfaces:**
-- Produces: `build_freeze_bundle(protocol_path, smoke_root, output_dir, repo_root, *, source_archive_path, commands_path, backend_factory=...) -> dict`.
-- Produces: `build_source_package(repo_root, protocol_path, output_path) -> dict`, which places `stage2_source.bundle` and `source_metadata.json` inside `stage2_source.zip`.
-- Freeze bundle contains protocol snapshot/hash, full canonical data manifest, A100 environment manifest, `pip_freeze.txt`, `source_commit.txt`, `source_archive_sha256.txt`, `commands.json`, and `checksum_inventory.json`.
+- Produces: `build_freeze_bundle(protocol_path, smoke_root, output_dir, repo_root, *, source_archive_path, expectations_path, commands_path, repeat_root, repeat_commands_path, backend_factory=...) -> dict`.
+- Produces: `build_source_package(repo_root, protocol_path, output_path, *, expectations_output_path=...) -> dict`, which places only `stage2_source.bundle` and `source_metadata.json` inside `stage2_source.zip` and atomically writes the external expectations sidecar.
+- Produces: `build_evidence_archive(repo_root, output_path, *, expectations_path=...) -> dict` through the dependency-light `package_stage2_evidence.py` CLI.
+- Freeze bundle contains protocol snapshot/hash, full canonical data manifest, A100 environment manifest, `pip_freeze.txt`, both command records, origin/execution commits, source metadata/expectations/archive hash, execution provenance, and `checksum_inventory.json`.
 - Notebook input filename is `/content/stage2_source.zip`; exported lightweight evidence filename is `/content/stage2_a100_evidence.zip`.
 - Freeze CLI supports creation with `--source-archive` and `--commands`, plus isolated `--verify-only --output-dir PATH` verification.
 
@@ -617,7 +619,9 @@ git commit -m "feat: monitor canonical jobs without auto tuning"
 def test_freeze_bundle_is_canonical_targeted_but_outside_canonical_directory(self):
     result = build_freeze_bundle(
         PROTOCOL, SMOKE, FREEZE, ROOT,
-        source_archive_path=ARCHIVE, commands_path=COMMANDS,
+        source_archive_path=ARCHIVE, expectations_path=EXPECTATIONS,
+        commands_path=COMMANDS, repeat_root=REPEAT,
+        repeat_commands_path=REPEAT_COMMANDS,
         backend_factory=FAKE_BACKEND,
     )
     self.assertEqual(result["target_schema"], "canonical_v1")
@@ -631,9 +635,12 @@ def test_checksum_inventory_matches_every_declared_file(self):
         self.assertEqual(sha256_file(FREEZE / relative), expected)
 
 def test_source_package_binds_clean_commit_protocol_and_git_bundle(self):
-    metadata = build_source_package(ROOT, PROTOCOL, ARCHIVE)
+    metadata = build_source_package(
+        ROOT, PROTOCOL, ARCHIVE, expectations_output_path=EXPECTATIONS
+    )
     self.assertFalse(metadata["git"]["dirty"])
-    self.assertEqual(len(metadata["git"]["commit"]), 40)
+    self.assertEqual(len(metadata["git"]["origin_commit"]), 40)
+    self.assertEqual(len(metadata["git"]["execution_commit"]), 40)
     self.assertEqual(len(metadata["protocol_sha256"]), 64)
     self.assertEqual(len(metadata["bundle_sha256"]), 64)
 ```
@@ -650,16 +657,17 @@ Require clean Git and successful validated A100 smoke. Instantiate the real back
 
 - [ ] **Step 4: Implement exact clean-commit source packaging**
 
-`build_source_package()` fails on dirty Git, runs `git bundle create <temp>/stage2_source.bundle HEAD`, writes `source_metadata.json` with commit, branch, protocol SHA-256, and bundle SHA-256, then creates `stage2_source.zip` with those two files. `package_stage2_source.py` exposes `--repo-root`, `--protocol`, and `--output`.
+`build_source_package()` fails on dirty Git, reads allow-listed blobs from origin `HEAD`, and creates a deterministic parentless `execution_commit` in a temporary Git object database. The bundle contains only that tree and commit—never origin history, `ties_results/`, environments, caches, weights, or transport archives. Metadata records both `origin_commit` and `execution_commit`, the exact source manifest, and checksums. `package_stage2_source.py` atomically writes an external expectations sidecar via required `--expectations-output`.
 
 - [ ] **Step 5: Create the Colab notebook as a thin command runner**
 
 Notebook cells perform these exact gates:
 
 ```python
-gpu = subprocess.check_output(
-    ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"], text=True
-).strip().splitlines()[0]
+gpu = subprocess.run(
+    ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+    check=True, cwd=repo, capture_output=True, text=True,
+).stdout.strip().splitlines()[0]
 if "A100" not in gpu:
     raise RuntimeError(f"Stage 2 requires A100, found {gpu}")
 ```
@@ -667,10 +675,10 @@ if "A100" not in gpu:
 ```bash
 python -m unittest discover -s tests -v
 python monitor_stage2_job.py --events ties_results/.stage2_monitor/colab_a100_run1.events.jsonl --watch ties_results/stage2_smoke/colab_a100_run1 -- python run_stage2_smoke.py --mode primary --environment colab_a100 --protocol docs/paper_rebuild/FROZEN_EXPERIMENT_PROTOCOL.md --output-dir ties_results/stage2_smoke/colab_a100_run1 --fresh
-python validate_stage2_smoke.py --root ties_results/stage2_smoke/colab_a100_run1 --canonical-dir ties_results/canonical_v1
+python validate_stage2_smoke.py --root ties_results/stage2_smoke/colab_a100_run1 --conditions standard_lora full_sr class_prior_reweight --canonical-dir ties_results/canonical_v1
 python monitor_stage2_job.py --events ties_results/.stage2_monitor/colab_a100_repeat_full_sr.events.jsonl --watch ties_results/stage2_smoke/colab_a100_repeat_full_sr -- python run_stage2_smoke.py --mode repeat_full_sr --environment colab_a100 --protocol docs/paper_rebuild/FROZEN_EXPERIMENT_PROTOCOL.md --output-dir ties_results/stage2_smoke/colab_a100_repeat_full_sr --fresh
-python validate_stage2_smoke.py --root ties_results/stage2_smoke/colab_a100_run1 --canonical-dir ties_results/canonical_v1 --compare-repeat ties_results/stage2_smoke/colab_a100_repeat_full_sr
-python freeze_stage2_environment.py --protocol docs/paper_rebuild/FROZEN_EXPERIMENT_PROTOCOL.md --smoke-root ties_results/stage2_smoke/colab_a100_run1 --repeat-root ties_results/stage2_smoke/colab_a100_repeat_full_sr --source-archive /content/stage2_source.zip --commands ties_results/stage2_smoke/colab_a100_run1/commands.json --repeat-commands ties_results/stage2_smoke/colab_a100_repeat_full_sr/commands.json --repo-root . --output-dir ties_results/stage2_smoke/freeze_bundle --fresh
+python validate_stage2_smoke.py --root ties_results/stage2_smoke/colab_a100_run1 --conditions standard_lora full_sr class_prior_reweight --canonical-dir ties_results/canonical_v1 --compare-repeat ties_results/stage2_smoke/colab_a100_repeat_full_sr
+python freeze_stage2_environment.py --protocol docs/paper_rebuild/FROZEN_EXPERIMENT_PROTOCOL.md --smoke-root ties_results/stage2_smoke/colab_a100_run1 --repeat-root ties_results/stage2_smoke/colab_a100_repeat_full_sr --source-archive /content/stage2_source.zip --source-expectations /content/stage2_source_expectations.json --commands ties_results/stage2_smoke/colab_a100_run1/commands.json --repeat-commands ties_results/stage2_smoke/colab_a100_repeat_full_sr/commands.json --repo-root . --output-dir ties_results/stage2_smoke/freeze_bundle --fresh
 ```
 
 Before these commands, the notebook extracts `stage2_source.zip`, verifies `stage2_source.bundle` against `source_metadata.json`, clones the bundle, checks out the recorded commit, and asserts `git status --porcelain` is empty. The notebook must keep `--events` in the sibling `ties_results/.stage2_monitor/` directory; it must never place monitor evidence inside a child `--fresh --output-dir` root.
@@ -689,6 +697,7 @@ Run:
 python -m json.tool notebooks/stage2_colab_a100_smoke.ipynb *> $null
 python package_stage2_source.py --help
 python freeze_stage2_environment.py --help
+python package_stage2_evidence.py --help
 python -m unittest discover -s tests -p "test_stage2_freeze.py" -v
 python -m unittest discover -s tests -v
 git diff --check
@@ -717,14 +726,22 @@ Expected: status is clean and the printed commit becomes the smoke-verified code
 - Generate ignored: `ties_results/stage2_smoke/local_rtx5080/`
 
 **Interfaces:**
-- Consumes the clean Task 7 commit and Stage 2 CLIs.
+- Packages the clean Task 7 origin into `stage2_source.zip` plus `stage2_source_expectations.json`, clones its parentless `execution_commit`, and runs the local smoke only from that execution clone.
 - Produces local tests, environment manifest, primary smoke artifacts, monitor events, and validation report.
 
-- [ ] **Step 1: Create an isolated Python 3.12 environment**
+- [ ] **Step 1: Package and clone the source-only execution snapshot, then create an isolated Python 3.12 environment**
 
 Run:
 
 ```powershell
+python package_stage2_source.py --repo-root . --protocol docs/paper_rebuild/FROZEN_EXPERIMENT_PROTOCOL.md --output stage2_source.zip --expectations-output stage2_source_expectations.json
+$stage2Expect = Get-Content stage2_source_expectations.json -Raw | ConvertFrom-Json
+Expand-Archive -Path stage2_source.zip -DestinationPath stage2_source_unpack
+git -c core.autocrlf=false clone stage2_source_unpack/stage2_source.bundle stage2_execution
+git -C stage2_execution config core.autocrlf false
+git -C stage2_execution checkout --detach $stage2Expect.execution_commit
+if ((git -C stage2_execution status --porcelain)) { throw 'execution clone is dirty' }
+Set-Location stage2_execution
 $env:UV_CACHE_DIR = (Resolve-Path '.').Path + '\.uv-cache'
 uv venv --python 3.12 .venv-stage2
 uv pip install --python .venv-stage2\Scripts\python.exe torch==2.11.0 --index-url https://download.pytorch.org/whl/cu128
@@ -765,7 +782,7 @@ Expected: exit 0; one shared checkpoint and three method statuses are success.
 Run:
 
 ```powershell
-.venv-stage2\Scripts\python.exe validate_stage2_smoke.py --root ties_results/stage2_smoke/local_rtx5080 --canonical-dir ties_results/canonical_v1
+.venv-stage2\Scripts\python.exe validate_stage2_smoke.py --root ties_results/stage2_smoke/local_rtx5080 --conditions standard_lora full_sr class_prior_reweight --canonical-dir ties_results/canonical_v1
 .venv-stage2\Scripts\python.exe -m pip freeze > ties_results/stage2_smoke/local_rtx5080/pip_freeze.txt
 ```
 
@@ -799,17 +816,17 @@ Expected: worktree remains clean because runtime outputs are ignored; record the
 - Consumes the clean smoke-verified code commit and notebook.
 - Produces same-runtime A100 run 1, repeat, comparison, full canonical data manifest, A100 environment freeze, and checksum inventory.
 
-- [ ] **Step 1: Package the exact clean commit**
+- [ ] **Step 1: Reuse and verify the exact Task 8 source package**
 
 Run:
 
 ```powershell
 git status --short
-.venv-stage2\Scripts\python.exe package_stage2_source.py --repo-root . --protocol docs/paper_rebuild/FROZEN_EXPERIMENT_PROTOCOL.md --output stage2_source.zip
-Get-FileHash stage2_source.zip -Algorithm SHA256
+Get-FileHash ..\stage2_source.zip -Algorithm SHA256
+Get-Content ..\stage2_source_expectations.json -Raw
 ```
 
-Expected: status is clean; `source_metadata.json` inside the zip records the same HEAD, protocol SHA-256, and Git-bundle SHA-256; record the outer archive SHA-256.
+Expected: the execution clone is clean, its HEAD equals the sidecar `execution_commit`, and the unchanged outer archive SHA-256 equals the Task 8 sidecar. Do not repackage from the execution clone: Task 9 must upload the exact same source archive and expectations used by Task 8.
 
 - [ ] **Step 2: Open Colab and allocate A100**
 
@@ -817,7 +834,7 @@ Use the in-app browser with the signed-in Colab session, upload `notebooks/stage
 
 - [ ] **Step 3: Upload the exact source archive and install dependencies**
 
-Upload `stage2_source.zip`. The notebook unpacks it, verifies the expected commit/archive hash recorded in its execution metadata, installs `torch==2.11.0` from the CUDA 12.8 wheel index plus repository dependencies, and records the pre/post environment.
+Upload both `..\stage2_source.zip` and `..\stage2_source_expectations.json` from Task 8. The notebook verifies the outer archive before reading internal metadata, cross-checks origin/execution commits and the source-manifest hash, checks out the same `execution_commit` used locally, installs dependencies, and records the environment.
 
 - [ ] **Step 4: Run full tests and A100 primary smoke under monitoring**
 
@@ -848,7 +865,7 @@ Download `/content/stage2_a100_evidence.zip` and extract it at the repository ro
 Run:
 
 ```powershell
-.venv-stage2\Scripts\python.exe validate_stage2_smoke.py --root ties_results/stage2_smoke/colab_a100_run1 --canonical-dir ties_results/canonical_v1 --compare-repeat ties_results/stage2_smoke/colab_a100_repeat_full_sr
+.venv-stage2\Scripts\python.exe validate_stage2_smoke.py --root ties_results/stage2_smoke/colab_a100_run1 --conditions standard_lora full_sr class_prior_reweight --canonical-dir ties_results/canonical_v1 --compare-repeat ties_results/stage2_smoke/colab_a100_repeat_full_sr
 .venv-stage2\Scripts\python.exe freeze_stage2_environment.py --verify-only --output-dir ties_results/stage2_smoke/freeze_bundle
 ```
 
@@ -877,8 +894,8 @@ Run:
 ```powershell
 .venv-stage2\Scripts\python.exe -m unittest discover -s tests -v
 .venv-stage2\Scripts\python.exe -m compileall -q canonical configs data models training utils run_canonical.py run_stage2_smoke.py validate_stage2_smoke.py monitor_stage2_job.py freeze_stage2_environment.py
-.venv-stage2\Scripts\python.exe validate_stage2_smoke.py --root ties_results/stage2_smoke/local_rtx5080 --canonical-dir ties_results/canonical_v1
-.venv-stage2\Scripts\python.exe validate_stage2_smoke.py --root ties_results/stage2_smoke/colab_a100_run1 --canonical-dir ties_results/canonical_v1 --compare-repeat ties_results/stage2_smoke/colab_a100_repeat_full_sr
+.venv-stage2\Scripts\python.exe validate_stage2_smoke.py --root ties_results/stage2_smoke/local_rtx5080 --conditions standard_lora full_sr class_prior_reweight --canonical-dir ties_results/canonical_v1
+.venv-stage2\Scripts\python.exe validate_stage2_smoke.py --root ties_results/stage2_smoke/colab_a100_run1 --conditions standard_lora full_sr class_prior_reweight --canonical-dir ties_results/canonical_v1 --compare-repeat ties_results/stage2_smoke/colab_a100_repeat_full_sr
 .venv-stage2\Scripts\python.exe freeze_stage2_environment.py --verify-only --output-dir ties_results/stage2_smoke/freeze_bundle
 git diff --check
 git status --short

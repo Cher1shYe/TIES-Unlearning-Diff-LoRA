@@ -22,6 +22,7 @@ ties_results/canonical_v1/
 ties_results/stage2_smoke/
 ties_results/.stage2_monitor/
 stage2_source.zip
+stage2_source_expectations.json
 
 # Downloaded result archives (redundant with the extracted ties_results/ tree)
 *.zip

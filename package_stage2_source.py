@@ -9,6 +9,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--repo-root", type=Path, required=True)
     parser.add_argument("--protocol", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--expectations-output", type=Path, required=True)
     return parser
 
 
@@ -16,7 +17,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     from canonical.source_package import build_source_package
 
-    metadata = build_source_package(args.repo_root, args.protocol, args.output)
+    metadata = build_source_package(args.repo_root, args.protocol, args.output, expectations_output_path=args.expectations_output)
     print(metadata["bundle_sha256"])
     return 0
 
