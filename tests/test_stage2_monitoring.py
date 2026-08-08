@@ -186,6 +186,43 @@ class Stage2MonitoringTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "command"):
             validate_monitor_jsonl(self.events, expected_command=["different"], expected_cwd=self.root)
 
+    def test_production_monitor_validator_rejects_nonzero_terminal_status_check(self):
+        from canonical.monitoring import validate_monitor_jsonl
+
+        self._run(FakeProcess(exit_after_checks=1), policy=PRODUCTION_POLICY)
+        records = self._records()
+        self.assertEqual("STATUS_CHECK", records[-2]["event"])
+        records[-2]["returncode"] = 7
+        self.events.write_text(
+            "".join(json.dumps(record) + "\n" for record in records), encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(ValueError, "terminal STATUS_CHECK"):
+            validate_monitor_jsonl(
+                self.events, expected_command=self.command, expected_cwd=self.root,
+            )
+
+    def test_production_monitor_validator_rejects_duplicate_start_and_terminal_events(self):
+        from canonical.monitoring import validate_monitor_jsonl
+
+        self._run(FakeProcess(exit_after_checks=1), policy=PRODUCTION_POLICY)
+        original = self._records()
+        for label, records in (
+            ("duplicate-start", [original[0], *original]),
+            ("duplicate-terminal", [*original[:-1], original[-1], original[-1]]),
+        ):
+            with self.subTest(label=label):
+                self.events.write_text(
+                    "".join(json.dumps(record) + "\n" for record in records),
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(ValueError, "exactly one"):
+                    validate_monitor_jsonl(
+                        self.events,
+                        expected_command=self.command,
+                        expected_cwd=self.root,
+                    )
+
     def test_completion_mirrors_child_return_code_and_never_uses_shell(self):
         process = FakeProcess(exit_after_checks=1, exit_code=7)
 

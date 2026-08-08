@@ -184,14 +184,25 @@ def validate_monitor_jsonl(
             raise ValueError("monitor cwd does not bind the expected repository")
         _validate_event_specific(record)
         records.append(record)
-    if records[0]["event"] != "STARTED" or records[-1]["event"] != "COMPLETED":
-        raise ValueError("monitor evidence must start with STARTED and end with COMPLETED")
-    if not any(record["event"] == "STATUS_CHECK" for record in records):
-        raise ValueError("monitor evidence requires at least one STATUS_CHECK")
-    if any(record["event"] in _FAILED_SUCCESS_EVENTS for record in records):
+    events = [record["event"] for record in records]
+    if events.count("STARTED") != 1 or events[0] != "STARTED":
+        raise ValueError("monitor evidence requires exactly one STARTED at index zero")
+    terminal_events = {"COMPLETED", "CRASHED", "HARD_TIMEOUT"}
+    terminal_indexes = [index for index, event in enumerate(events) if event in terminal_events]
+    if len(terminal_indexes) != 1 or terminal_indexes[0] != len(records) - 1:
+        raise ValueError("monitor evidence requires exactly one terminal event at the end")
+    if any(event in _FAILED_SUCCESS_EVENTS for event in events):
         raise ValueError("successful monitor evidence contains a failure event")
-    if records[-1].get("returncode") != 0:
-        raise ValueError("monitor COMPLETED returncode must equal zero")
+    if len(records) < 3 or events[-2:] != ["STATUS_CHECK", "COMPLETED"]:
+        raise ValueError("successful monitor evidence must end with STATUS_CHECK then COMPLETED")
+    if records[-2].get("returncode") != 0 or records[-1].get("returncode") != 0:
+        raise ValueError("terminal STATUS_CHECK and COMPLETED returncodes must equal zero")
+    if any(
+        record["event"] == "STATUS_CHECK" and index != len(records) - 2
+        and record.get("returncode") is not None
+        for index, record in enumerate(records)
+    ):
+        raise ValueError("non-terminal STATUS_CHECK returncodes must be null")
     previous_time: datetime | None = None
     previous_elapsed = -1.0
     for record in records:
