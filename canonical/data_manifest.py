@@ -4,7 +4,7 @@ from hashlib import sha256
 import json
 from typing import Any, Mapping, Sequence
 
-from canonical.data import deterministic_cap_records, stable_record_id
+from canonical.data import deterministic_cap_records, stable_record_ids
 
 
 def _ids_checksum(ids: Sequence[str]) -> str:
@@ -35,7 +35,7 @@ def dataset_identity_entry(
     if not full_rows:
         raise ValueError("dataset identity entry rejects an empty dataset")
 
-    full_ids = [stable_record_id(row, preferred_id_fields) for row in full_rows]
+    full_ids = stable_record_ids(full_rows, preferred_id_fields)
     if len(full_ids) != len(set(full_ids)):
         raise ValueError("dataset identity entry contains duplicate full IDs")
 
@@ -54,7 +54,7 @@ def dataset_identity_entry(
             )
     else:
         selected_rows = [dict(record) for record in selected_records]
-        selected_ids = [stable_record_id(row, preferred_id_fields) for row in selected_rows]
+        selected_ids = stable_record_ids(selected_rows, preferred_id_fields)
         if not selected_ids:
             raise ValueError("dataset identity entry rejects empty selected membership")
         if selected_limit is None:

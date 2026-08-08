@@ -170,8 +170,19 @@ class DataIdentityManifestTest(unittest.TestCase):
         }
         with self.assertRaisesRegex(ValueError, "empty"):
             dataset_identity_entry([], selected_limit=None, **kwargs)
+        # Duplicate source IDs are now deterministically disambiguated instead
+        # of rejected (real OOD sources such as WANLI test repeat IDs).
+        disambiguated = dataset_identity_entry(
+            [{"uid": "same"}, {"uid": "same"}], selected_limit=None, **kwargs
+        )
+        self.assertEqual(["same", "same::dup1"], disambiguated["full_ids"])
+        # A raw ID colliding with a disambiguation suffix still fails closed.
         with self.assertRaisesRegex(ValueError, "duplicate"):
-            dataset_identity_entry([{"uid": "same"}, {"uid": "same"}], selected_limit=None, **kwargs)
+            dataset_identity_entry(
+                [{"uid": "same"}, {"uid": "same"}, {"uid": "same::dup1"}],
+                selected_limit=None,
+                **kwargs,
+            )
         with self.assertRaisesRegex(ValueError, "selected"):
             dataset_identity_entry(MANIFEST_ROWS, selected_limit=5, **kwargs)
 
@@ -197,7 +208,9 @@ class DataIdentityManifestTest(unittest.TestCase):
         }
         cases = (
             ("empty", 2, []),
-            ("duplicate", 2, [MANIFEST_ROWS[0], MANIFEST_ROWS[0]]),
+            # Explicit duplicate selected rows disambiguate to an ID outside
+            # the (duplicate-free) full membership and are still rejected.
+            ("not present in full dataset membership", 2, [MANIFEST_ROWS[0], MANIFEST_ROWS[0]]),
             ("full dataset", None, MANIFEST_ROWS[:2]),
             ("selected", 2, MANIFEST_ROWS[:1]),
             ("not present", 2, [{"uid": "outside"}, MANIFEST_ROWS[0]]),

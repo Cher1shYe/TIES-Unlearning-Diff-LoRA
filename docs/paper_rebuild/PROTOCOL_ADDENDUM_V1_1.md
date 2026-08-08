@@ -49,6 +49,14 @@
   3. 3-seed 中期检查仅用于确认流水线健康与预算决策；不得据此修改任何配置、超参或数据。
   4. 若 Gate A 通过且预算允许，建议补满 5 seeds 后再定稿主表；投 CCF-B 时补满 5 seeds。
 
+### 1.6 OOD 数据身份：重复源 ID 的确定性消歧（2026-08-08，首次成功 smoke 之前）
+
+- 首次真实数据 manifest 构建发现：WANLI test 集的首选 ID 字段存在重复值，触发 `dataset identity entry contains duplicate full IDs`（Stage 1 报告"明确未做"第 7 条预言的缺口）。
+- 修正后的契约：`stable_record_ids` 对重复的 stable ID 按源文件顺序做确定性消歧——首个出现保持原 ID，后续重复者追加 `::dupN`（N 为 1 起的重复序号）。该规则同时覆盖重复源 ID 与完全重复的整行内容（后者会使内容哈希回退同样碰撞）。
+- 性质：不改变任何数据集的成员、数量、种子或选择算法；对无重复的数据源（MNLI、HANS、e-SNLI、ANLI、SNLI-hard）产出的 ID 逐字节不变。manifest 与 loader 的 cap 选择使用同一函数，ID 全链一致。
+- 防护保留：消歧后仍冲突（原始 ID 恰与 `::dupN` 后缀形式碰撞）继续 fail closed；显式 selected_records 中的重复行经消歧后落在 full membership 之外，同样被拒绝。
+- 本修正发生在任何成功 smoke 训练或 canonical 结果产生之前。
+
 ## 2. 明确不变项
 
 - 数据成员：100k MNLI（data_seed=42）、5k validation、HANS build/dev/evaluation 划分与全部 v4 锚值。

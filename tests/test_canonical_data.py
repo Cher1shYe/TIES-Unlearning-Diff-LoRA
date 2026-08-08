@@ -14,6 +14,8 @@ import canonical.data as canonical_data
 from canonical.data import (
     build_hans_content_integrity_manifest,
     dataset_row_ids,
+    deterministic_cap_records,
+    stable_record_ids,
     qualify_hans_pair_id,
     sample_dataset,
     split_hans_records,
@@ -485,3 +487,58 @@ class CanonicalDataContractTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DuplicateSourceIdentityTest(unittest.TestCase):
+    """Real OOD sources (e.g. WANLI test) can repeat IDs or whole records."""
+
+    def _rows_with_duplicate_source_ids(self):
+        return [
+            {"id": "7", "premise": "p1", "hypothesis": "h1", "gold": "entailment"},
+            {"id": "7", "premise": "p2", "hypothesis": "h2", "gold": "neutral"},
+            {"id": "9", "premise": "p3", "hypothesis": "h3", "gold": "contradiction"},
+            # Fully duplicated record: even the content-hash fallback collides.
+            {"premise": "p4", "hypothesis": "h4", "gold": "entailment"},
+            {"premise": "p4", "hypothesis": "h4", "gold": "entailment"},
+        ]
+
+    def test_stable_record_ids_disambiguate_duplicates_deterministically(self):
+        rows = self._rows_with_duplicate_source_ids()
+        ids = stable_record_ids(rows, ("pairID", "uid", "id", "idx"))
+        self.assertEqual(len(ids), len(set(ids)))
+        self.assertEqual(["7", "7::dup1", "9"], ids[:3])
+        self.assertTrue(ids[4].endswith("::dup1"))
+        self.assertEqual(ids[3], ids[4].removesuffix("::dup1"))
+        # Deterministic: same input order yields the same IDs.
+        self.assertEqual(ids, stable_record_ids(rows, ("pairID", "uid", "id", "idx")))
+
+    def test_stable_record_ids_are_unchanged_without_duplicates(self):
+        rows = [{"id": str(index), "premise": f"p{index}"} for index in range(4)]
+        self.assertEqual(
+            [str(index) for index in range(4)],
+            stable_record_ids(rows, ("id",)),
+        )
+
+    def test_identity_entry_accepts_duplicate_source_ids(self):
+        from canonical.data_manifest import dataset_identity_entry
+
+        entry = dataset_identity_entry(
+            self._rows_with_duplicate_source_ids(),
+            source="alisawuffles/WANLI",
+            split="test",
+            preferred_id_fields=("pairID", "uid", "id", "idx"),
+            selected_limit=3,
+            seed=42,
+        )
+        self.assertEqual(5, entry["full_count"])
+        self.assertEqual(3, entry["selected_count"])
+        self.assertIn("7::dup1", entry["full_ids"])
+        self.assertTrue(set(entry["selected_ids"]).issubset(entry["full_ids"]))
+
+    def test_deterministic_cap_accepts_duplicate_source_ids(self):
+        rows = self._rows_with_duplicate_source_ids()
+        selected, selected_ids = deterministic_cap_records(
+            rows, 4, 42, (), ("pairID", "uid", "id", "idx")
+        )
+        self.assertEqual(4, len(selected))
+        self.assertEqual(len(selected_ids), len(set(selected_ids)))

@@ -140,6 +140,28 @@ def stable_record_id(
     return sha256(_canonical_bytes(dict(record))).hexdigest()
 
 
+def stable_record_ids(
+    records: Sequence[Mapping[str, Any]], preferred_fields: Sequence[str] = ()
+) -> list[str]:
+    """Per-record stable IDs with deterministic duplicate disambiguation.
+
+    Real evaluation sources (e.g. the WANLI test split) can repeat a
+    source-provided ID or even a full record, which would also collide under
+    the content-hash fallback.  The first occurrence keeps the raw stable ID;
+    each later duplicate is suffixed ``::dupN`` (1-based repeat index) in
+    source order.  IDs stay unique and reconstructible from the source file,
+    and are byte-identical to ``stable_record_id`` for duplicate-free data.
+    """
+    occurrence_counts: dict[str, int] = {}
+    identities: list[str] = []
+    for record in records:
+        raw_id = stable_record_id(record, preferred_fields)
+        repeats = occurrence_counts.get(raw_id, 0)
+        occurrence_counts[raw_id] = repeats + 1
+        identities.append(raw_id if repeats == 0 else f"{raw_id}::dup{repeats}")
+    return identities
+
+
 def qualify_hans_pair_id(pair_id: Any, physical_source_partition: str) -> str:
     """Return the source-file-qualified identity for one official HANS row."""
     if physical_source_partition not in _HANS_SOURCE_PREFIXES:
@@ -176,14 +198,12 @@ def deterministic_cap_records(
     if not isinstance(seed, int) or isinstance(seed, bool) or seed < 0:
         raise ValueError("seed must be a non-negative integer")
 
+    materialized = [dict(source_record) for source_record in records]
+    identities = stable_record_ids(materialized, preferred_fields)
+    if len(identities) != len(set(identities)):
+        raise ValueError("stable record identities are not unique after disambiguation")
     ranked_strata: dict[str, list[tuple[str, dict[str, Any]]]] = {}
-    seen_ids: set[str] = set()
-    for source_record in records:
-        record = dict(source_record)
-        stable_id = stable_record_id(record, preferred_fields)
-        if stable_id in seen_ids:
-            raise ValueError(f"duplicate stable record ID: {stable_id}")
-        seen_ids.add(stable_id)
+    for stable_id, record in zip(identities, materialized):
         stratum = _canonical_bytes([record.get(field) for field in strata_fields]).decode("utf-8")
         ranked_strata.setdefault(stratum, []).append((stable_id, record))
 
