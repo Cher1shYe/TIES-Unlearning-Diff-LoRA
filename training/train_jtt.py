@@ -63,7 +63,7 @@ def setup_single_lora_model(cfg: TrainConfig, device):
     return model, opt
 
 def train_jtt_baseline(cfg: TrainConfig):
-    set_seed(cfg.seed)
+    set_seed(cfg.training_seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"\n[JTT Baseline] device={device}")
 
