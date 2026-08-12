@@ -32,3 +32,5 @@ Instructions.md
 
 # Local Git worktrees
 .worktrees/
+*.patch
+patch/如何应用与执行.md
