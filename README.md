@@ -1,183 +1,188 @@
-# TIES-Unlearning Diff-LoRA (Layer-wise kNN)
-This repository implements a multi-stage fine-tuning algorithm that combines TIES-Merging with Low-Rank Unlearning to eliminate shortcut/bias features learned by Large Language Models on specific tasks.
+# Diff-LoRA: A Controlled Attribution Study of Rank-Differential LoRA Subtraction
 
-## Core Mechanism
+This repository contains the method, the experimental protocol, and the canonical results behind the paper
+**"Subtraction or Threshold Shift? A Controlled Multi-Seed Attribution Study of LoRA Arithmetic for Shortcut Mitigation in NLI."**
 
-Traditional **$W_{high} - W_{low}$** parameter subtraction often degrades a model's general reasoning capabilities. To address this, our approach introduces **Phase 2.5 (Layer-wise kNN Analysis)** to dynamically probe and locate specific network layers where shortcuts are heavily concentrated. This is followed by selective TIES merging in Phase 3 to achieve precise, "targeted debiasing".
-* Phase 1 (Learn Task): Freeze the N-path; train the classification head and high-rank P-LoRA.
-* Phase 2 (Capture Shortcut): Freeze the P-path and classification head; train low-rank N-LoRA on biased mixed data.
-* Phase 2.5 (Layer-wise Analysis): Freeze the entire model. Automatically identify the layers with the most severe shortcuts using symmetric KL divergence and kNN feature clustering scores.
-* Phase 3 (TIES Fine-tuning + debias reweighting): Execute TIES merging (sign alignment and magnitude trimming) strictly on the selected layers, then fine-tune the head + P-path to recover MNLI. Crucially, this fine-tuning is **re-weighted by the frozen N (shortcut) path**: examples the shortcut already solves are down-weighted by `w = (1 − p_N)^γ`, so recovering task accuracy cannot re-learn the shortcut it just removed. Without this step, Phase-3 re-injects the bias and the subtraction yields *no* net robustness gain; with it, HANS non-entailment improves above the no-subtraction lower bound. Controlled by `phase3_debias_reweight` (on by default).
+The code implements *TIES-Unlearning Diff-LoRA*: a dual-path LoRA pipeline that trains a high-rank task branch and a low-rank "shortcut" branch, then subtracts the latter from the former under a sign-consensual mask, with the aim of reducing reliance on the syntactic heuristics that HANS is built to expose.
 
-## Evaluation & Leakage-free Protocol
+> **What this repository reports.** We built this method and, in an early single-seed run, measured HANS non-entailment accuracy rising from 20.21% to 30.46% at essentially unchanged MNLI accuracy. This repository is the audit of that result. Under a controlled six-condition matrix run at five training seeds, the claim does not hold: the subtraction operator contributes nothing in isolation and is *harmful* in combination, and the movement that remains is equivalent to a decision-threshold shift. The code is released so the analysis can be reproduced and applied to other methods in the same family. See [Findings](#findings).
 
-Every run is evaluated on **MNLI** (in-distribution), **e-SNLI** (cross-source utility), and four OOD/adversarial robustness sets: **HANS** (overall / entailment / non-entailment), **ANLI**, **SNLI-hard**, and **WANLI** (generalization to harder, naturally adversarial NLI). WANLI is downloaded from the Hub on first use; if it cannot be fetched the run still completes and records WANLI as `n/a`.
+---
 
-**Leakage-free HANS split** (`hans_clean_split`, default `True`): shortcut capture (Phase 2) and layer localization (Phase 2.5) draw from the HANS **train** split (`heuristics_train_set.txt`), while the HANS **evaluation** split (`heuristics_evaluation_set.txt`) is used *only* for final evaluation and stays strictly held out — keeping shortcut induction, layer selection, and evaluation disjoint. Pass `--leaky-hans` to `run_baselines.py` to reproduce the old (leaky) single-split behaviour for comparison.
+## Findings
 
-## Directory Structure
+All numbers below come from `canonical_v1`: 6 conditions × 5 training seeds = 30 runs, all completed, no run excluded.
 
-* `configs/`: Global hyperparameters and LoRA configurations (`TrainConfig`, `LoRAConfig`).
+| Contrast | What it isolates | Δ HANS non-ent. | 95% CI | Positive seeds |
+|---|---|---|---|---|
+| `staged_neither` − `standard_lora` | the staged pipeline itself | +1.55 pp | [−1.87, +4.96] | 4/5 |
+| `subtraction_only` − `staged_neither` | subtraction, alone | +0.23 pp | [−3.49, +3.94] | 3/5 |
+| `full_sr` − `reweight_only` | subtraction, added to reweighting | **−7.95 pp** | [−18.70, +2.80] | **0/5** (sign test *p* = 0.031) |
+| `reweight_only` − `staged_neither` | N-guided reweighting | +25.60 pp | [−4.31, +55.51] | 4/5 |
 
-* `data/`: Scripts for downloading MNLI and HANS datasets, data mixing, and constructing kNN analysis samples.
+1. **Subtraction is not the source of any improvement.** Alone it is indistinguishable from zero; added to reweighting it lowers the primary endpoint in every one of the five seeds.
+2. **What movement exists is a threshold shift.** Re-thresholding the unmodified baseline to predict entailment at the same rate reproduces — and slightly exceeds — the method's non-entailment accuracy (mean residual −0.60 pp). Nothing transfers to e-SNLI, ANLI, SNLI-hard or WANLI.
+3. **The Phase-2 objective is degenerate.** Trained on a mixture that is 90% HANS-entailment, a constant "always entailment" predictor already scores ≈90%. The low-rank branch reaches that constant solution in all five seeds, scoring exactly 0.500 on each of the three heuristics — it learned a label, not a heuristic. Its *confidence* is unconstrained and effectively drawn by the seed, which is why the downstream weighting rule is algebraically inert on two seeds and reduces to class rebalancing on three.
+4. **Single-seed evaluation of this pipeline is unreliable.** Identical configuration, data and hyperparameters yield HANS non-entailment accuracy anywhere from 17.5% to 56.0%.
 
-* `models/`: Custom dual-path LoRA layers (`ties_lora.py`), model surgery scripts (`surgery.py`), and the Phase 2.5 analysis engine (`analyzer.py`).
+---
 
-* `training/`: The three-phase training main loop, metrics evaluation, and baseline comparisons.
+## The six-condition matrix
 
-* `utils/:` Optimizer parameter grouping and logging utilities.
+Within each seed, five conditions load a **byte-identical Phase-1/2 checkpoint** (verified by SHA-256) and diverge only at Phase 3, so any difference between them is attributable to the Phase-3 component rather than to upstream sampling noise.
 
-## Getting Started
+| Condition | Shared checkpoint | Subtraction | Phase-3 weighting |
+|---|---|---|---|
+| `standard_lora` | no (independent baseline) | — | none |
+| `staged_neither` | yes | off | none |
+| `subtraction_only` | yes | **on** | none |
+| `reweight_only` | yes | off | **N-guided** |
+| `full_sr` (complete method) | yes | **on** | **N-guided** |
+| `class_prior_reweight` | yes | off | class-prior |
 
-### Prerequisites
+`class_prior_reweight` replaces the per-example signal with its class-conditional average, keeping the label-level effect while discarding all per-example information. It is the control that separates *"the method identifies shortcut-reliant examples"* from *"the method rebalances label priors."* On three of five seeds it collapses to predicting non-entailment for every HANS example.
 
-    ```bash
-    Python >= 3.9
+---
 
-    PyTorch >= 2.0.0
-    ```
+## Method
 
-### Installation
-1. Clone the repository:
+Each targeted linear layer of a frozen backbone carries two LoRA branches of asymmetric capacity, ΔP = B_P A_P with rank r_P = 16 and ΔN = B_N A_N with rank r_N = 4. The effective update is
 
-    ```bash
-    git clone https://github.com/your-username/TIES-Unlearning.git
-    cd TIES-Unlearning
-    ```
-
-2. Install dependencies:
-
-    ```bash
-    pip install -r requirements.txt
-    ```
-
-
-## Quick Start
-
-1. Run the complete three-phase debiasing training and baseline experiments:
-
-    ```bash
-    python main.py
-    ```
-
-2. After running, the evaluation metrics will be saved in `ties_unlearn_results/final_summary.json` 
-
-## Configuration Highlights
-You can easily customize the experiment by modifying the parameters in `configs/`. Here are the most critical toggles:
-
-* **Baseline Comparison (JTT vs. TIES)**: Set `run_jtt = True` to run the Just Train Twice (JTT) baseline.
-
-    * Adjust `jtt_upweight_factor` (default: 4) to control the penalty for misclassified samples.
-
-* Layer-wise Analysis (Phase 2.5): `enable_layerwise_analysis`: Toggle the automatic layer selection.
-
-    * `layer_selection_topk` (default: 4): Number of layers to select for targeted debiasing.
-
-* TIES Merging:
-
-    * `trim_ratio` (default: 0.2): Controls the proportion of low-magnitude weights dropped during Phase 3.
-
-* Data Mixture:
-
-    * `phase2_mnli_mix_ratio` (default: 0.10): The proportion of MNLI data mixed with HANS entailment data during Phase 2 shortcut capture.
-
-* Phase-3 debias reweighting (the proposed fix — **on by default**):
-
-    * `phase3_debias_reweight` (default: True): down-weight shortcut-solvable examples during Phase-3 using the frozen N path, so debias fine-tuning cannot re-learn the shortcut.
-
-    * `phase3_reweight_gamma` (default: 2.0): strength of the down-weighting `w=(1−p_N)^γ`.
-
-* Leakage-free evaluation:
-
-    * `hans_clean_split` (default: True): train / localize on the HANS train split, evaluate on the disjoint HANS eval split (see *Evaluation & Leakage-free Protocol* above).
-
-## Baselines & Ablations
-
-Two drivers reproduce the reviewer-requested comparisons. Add `--small` for a
-Colab-friendly budget; use `--only` / `--skip` to select methods.
-
-**Stronger debiasing baselines** (`run_baselines.py`):
-
-```bash
-python run_baselines.py            # all 7 methods → baseline_results/comparison.{json,md}
-python run_baselines.py --small --only ties_full negmerge poe
+```
+ΔW_eff = α·ΔP − β·(M_trim ⊙ M_sign) ⊙ ΔN
 ```
 
-| tag | method |
-|---|---|
-| `standard_lora` | plain single-path LoRA |
-| `jtt` | Just Train Twice |
-| `poe` | Product-of-Experts with a hypothesis-only bias model |
-| `zfilter` | data-centric filtering of bias-aligned examples |
-| `negmerge` | global sign-consensus merge (NegMerge-style, no trim/localization/Phase-3) |
-| `naive_subtract` | **true** global naive subtraction `αΔP − βΔN`, no masks, no Phase-3 |
-| `ties_full` | the full proposed pipeline |
+where `M_trim` keeps the top 20% of |ΔN| by global magnitude and `M_sign` keeps the coordinates on which ΔP and ΔN agree in sign. Note that LoRA scaling `s = α_lora / r` gives `s_N = 4·s_P`, so the low-rank branch enters the merge amplified fourfold.
 
-**Component ablations** (`run_ablations.py`) — each row isolates one design choice:
+**Phase 1** trains the head and P on MNLI with N frozen.
+**Phase 2** freezes the head and P, and trains N on 10% MNLI + 90% HANS-entailment drawn from a held-out HANS build split.
+**Phase 2.5** ranks encoder layers by a hybrid of layer-wise KL divergence between P-only and N-only predictions and kNN probing of CLS representations (prediction depth, early-wrong).
+**Phase 3** activates the merge on the selected layers and fine-tunes the head and P with N frozen, applying N-guided reweighting `w(x) ∝ (1 − p_N(y|x))^γ`.
 
-```bash
-python run_ablations.py            # → ablation_results/ablation_summary.{json,md}
-```
+Backbone RoBERTa-base; LoRA on the query and value projections of every encoder layer (24 injected modules); FP32 throughout.
 
-Merge-mask family (localization + Phase-3 fixed): `full` (the full proposed method, **with**
-debias reweighting), `naive_mask`, `sign_only`, `trim_only`, `no_phase3`. Layer-localization
-family (full mask): `global`, `random`, `kl_only`, `knn_only`. Phase-3 debiasing: `no_reweight`
-(ablate the N-reweighting — shows its contribution vs `full`), `full_lockP` (alternative fix:
-freeze the subtracted layers' P in Phase-3 instead of reweighting). Lower bound: `no_subtraction`.
+---
 
-These map onto new `TrainConfig` knobs: `merge_mode` (`full|naive|sign_only|trim_only|p_only`),
-`random_layer_selection`, `phase3_debias_reweight` / `phase3_reweight_gamma` (Phase-3 N-reweighting),
-`phase3_freeze_subtracted_p` (the freeze alternative), plus `bias_model_epochs` /
-`zfilter_drop_ratio` / `poe_bias_scale` for the bias-model baselines.
+## Experimental protocol
 
-## Robustness & Sensitivity
+The protocol was frozen **before any canonical run was executed** and was not revised afterwards. Full text: [`docs/paper_rebuild/FROZEN_EXPERIMENT_PROTOCOL.md`](docs/paper_rebuild/FROZEN_EXPERIMENT_PROTOCOL.md), with [addendum v1.1](docs/paper_rebuild/PROTOCOL_ADDENDUM_V1_1.md).
 
-**Multi-seed results** (`run_multiseed.py`) — reports mean ± std across seeds. `--methods`
-accepts **both** baseline tags and ablation tags (e.g. `no_reweight`, `no_subtraction`, `full_lockP`):
+- **Data.** 100,000 MNLI training and 5,000 validation examples at `data_seed = 42`, identical across every condition and seed.
+- **HANS partitioning.** Deterministic build / dev / official-evaluation split. Phase 2 draws **only** from the build split; the official evaluation set shares no example with it, and disjointness plus content integrity are enforced by hashed manifests.
+- **Seeds.** `[42, 123, 2024, 3407, 777]`, fixed in advance. Every condition runs at every seed.
+- **Primary endpoint.** HANS non-entailment accuracy. Utility constraint: MNLI must not fall more than 0.5 pp below `standard_lora`.
+- **Evaluation hygiene.** The official HANS evaluation set is never read during Phase 1, 2, 2.5 or intermediate Phase-3 checkpoint selection. Access is logged and validated.
+- **Pre-registered gates.** Four decision gates, each with its paper-level consequence, were specified in advance so that the narrative could not be chosen after seeing the numbers. All four failed; the paper reports that outcome.
 
-```bash
-python run_multiseed.py --seeds 42 123 2024
-# default methods: standard_lora jtt ties_full no_reweight no_subtraction
-# → multiseed_results/multiseed_summary.{json,md}  (per-seed runs isolated under seed_<s>/)
-```
+Statistics: seed-wise paired differences, 95% CIs from the *t* distribution at df = 4, plus pre-specified one-sided exact sign and Wilcoxon signed-rank tests (minimum attainable *p* = 2⁻⁵ = 0.031).
 
-The sweep **resumes automatically**: re-running the same command skips already-finished
-`(seed, method)` runs (tracked in `multiseed_runs.json`). Pass `--fresh` to ignore prior
-results and start over.
+---
 
-**Hyperparameter sensitivity** (`run_sensitivity.py` + `plot_sensitivity.py`) — one-at-a-time
-sweep over every parameter named in the reviews (`r_P`, `r_N`, `alpha`, `beta`, `trim_ratio`,
-`phase2_mnli_mix_ratio`, `layer_selection_topk`, `neg_lr_mult`, `target_modules`). By default,
-the script also includes MR.4 rank controls: equal-rank settings, a reversed-rank setting, and
-final P-only/N-only branch evaluations for those controls:
+## Reproducing the canonical results
 
-Use `python run_sensitivity.py --small --only rank_controls` to run only these controls, or
-`python run_sensitivity.py --small --skip-rank-controls` to reproduce the original OAT grid.
-Rank-control runs additionally write `rank_control_summary.md`, comparing merged, P-only, and
-N-only metrics for the default rank-differential setting, equal-rank controls, and reversed ranks.
-The reduced-budget MR.4 outputs used for the revision are checked in under
-`ties_results/mr4_rank_controls_small/`, with teammate-facing notes in
-`MR4_REVISION_NOTES.md`.
+### Requirements
+
+Python 3.10+, one A100-class GPU. Approximately 3 hours per seed (shared Phase-1/2 preparation plus six condition branches), about 15–17 GPU-hours for the full matrix.
 
 ```bash
-python run_sensitivity.py --small            # → sensitivity_results/sensitivity_summary.json
-python run_sensitivity.py --small --only rank_controls --output-dir ./ties_results/mr4_rank_controls_small
-python plot_mr4_rank_controls.py --results-dir ./ties_results/mr4_rank_controls_small
-python plot_sensitivity.py                   # → one PNG per parameter + sensitivity_table.md
+pip install -r requirements.txt
 ```
 
-**Resuming / rebuilding summaries** — recover from interruptions without retraining finished runs:
+Versions are pinned in the Colab notebook (`transformers==5.14.1`, `datasets==5.0.1`); older `datasets` releases import `torchvision.io.VideoReader` without a guard and crash on the first training batch when torchvision is present.
+
+### Run the matrix
 
 ```bash
-python finish_sensitivity.py --output-dir ./sensitivity_results   # finish a broken sweep, rebuild summary
-python finish_baselines.py   --output-dir ./baseline_results      # rebuild comparison.{json,md} from per-method metrics.json
+python run_canonical.py \
+  --stage core \
+  --protocol docs/paper_rebuild/FROZEN_EXPERIMENT_PROTOCOL.md \
+  --output-dir /path/to/canonical_v1 \
+  --fresh
 ```
 
-## Contributing & Contact
-We welcome contributions! If you encounter any bugs, have feature requests, or want to discuss the code:
+Execution is seed-major with a protocol-frozen rotation of condition order within each seed. Runs are resumable: drop `--fresh` to continue, and completed runs are skipped. Every run records its configuration, resolved environment, Git commit, terminal status, metrics, per-example HANS predictions and logs, so all aggregate metrics are recomputable from the prediction records.
 
-Issues: Please open an issue on GitHub. We actively monitor the issue tracker.
+`run_canonical.py` refuses to start from a dirty Git working tree.
 
-Pull Requests: Feel free to submit PRs for code improvements or bug fixes.
+### Colab
 
-Contact: For academic collaborations or specific technical questions, please reach out via [ye_bohou@outlook.com].
+[`notebooks/canonical_colab.ipynb`](notebooks/canonical_colab.ipynb) runs the whole thing end to end: GPU gate → clone at a fixed commit → dependencies → full test gate → smoke tests → canonical matrix, with results persisted to Google Drive and resumable across sessions.
+
+### Smoke tests and environment freeze
+
+```bash
+python run_stage2_smoke.py --mode primary --environment colab_a100 \
+  --protocol docs/paper_rebuild/FROZEN_EXPERIMENT_PROTOCOL.md \
+  --output-dir /path/to/smoke --fresh
+
+python validate_stage2_smoke.py --root /path/to/smoke \
+  --conditions standard_lora full_sr class_prior_reweight \
+  --compare-repeat /path/to/smoke_repeat \
+  --canonical-dir /path/to/canonical_v1
+```
+
+The validator checks metric recomputability from predictions, checkpoint pairing, evaluation-access hygiene, and that the formal result directory is still empty before the canonical matrix starts.
+
+### Tests
+
+```bash
+python -m unittest discover -s tests -p "test_*.py"
+```
+
+184 tests; one heavy packaging integration test is skipped by default (set `STAGE2_RUN_PACKAGING_INTEGRATION=1` to include it).
+
+---
+
+## Repository layout
+
+```
+canonical/       Canonical experiment machinery: condition matrix, runner, data
+                 identity and integrity manifests, HANS metric recomputation,
+                 Stage-2 validation, environment freeze
+configs/         TrainConfig / LoRAConfig — all hyperparameters
+data/            Dataset loading, HANS partitioning, Phase-2 mixture construction
+models/          ties_lora.py (dual-path LoRA), surgery.py, analyzer.py (Phase 2.5)
+training/        Phase 1/2/2.5/3 trainer, baselines, weighting rules
+tests/           184 tests covering the above
+docs/paper_rebuild/   Frozen protocol, addenda, stage reports
+notebooks/       Colab runners
+ties_results/    Exploratory results predating the canonical protocol — see note
+run_canonical.py         Canonical six-condition matrix
+run_stage2_smoke.py      Pre-flight smoke matrix
+validate_stage2_smoke.py Strict artifact validation
+main.py                  Single-run entry point for the method
+```
+
+> **`ties_results/` is exploratory.** Those directories predate the frozen protocol and were produced under single-seed, pre-registration conditions. They are kept for transparency about how the project developed. **They are not the canonical results and no claim in the paper rests on them.**
+
+---
+
+## Applying this design to other methods
+
+The attribution design is not specific to rank-differential subtraction. Reusing it requires three things and no new machinery:
+
+1. a **staged control** that runs the full pipeline with every intervention disabled, separating the operator from the training procedure around it;
+2. **shared-checkpoint pairing**, so that all conditions branch from one byte-identical checkpoint per seed;
+3. a **signal-stripped control** that preserves the intervention's coarse effect while removing the information it claims to use.
+
+Two diagnostics are worth adding for free: report the proxy's per-class confidence and per-heuristic accuracy after the concentration stage, and report the **threshold-matched residual** alongside any challenge-set gain — on a binary challenge set derived from a three-way task, accuracy on one class can always be bought with accuracy on the other.
+
+---
+
+## Citation
+
+```bibtex
+@misc{diff-lora-attribution,
+  title  = {Subtraction or Threshold Shift? A Controlled Multi-Seed Attribution
+            Study of LoRA Arithmetic for Shortcut Mitigation in NLI},
+  author = {Chen, Nuo and Huang, Sicheng and Shi, Dayou and Ye, Bohou and Yuan, Weitu},
+  year   = {2026},
+  note   = {All authors contributed equally and should be considered co-first
+            authors; author order is alphabetical.},
+  url    = {https://github.com/LeafTraces/Diff-LoRA}
+}
+```
+
+## License
+
+See [LICENSE](LICENSE).
