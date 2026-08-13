@@ -140,7 +140,11 @@ gold_label × heuristic × subcase
 - HANS-train dev：20%；
 - HANS evaluation：官方 `heuristics_evaluation_set.txt`，不参与上述划分。
 
-划分算法同样冻结：在每个联合 stratum 内，先按稳定 `pairID` 排序，再使用 NumPy `default_rng(42)` 生成排列；前 `floor(0.20 × n_stratum)` 条进入 dev，其余进入 build。若某个 stratum 少于 5 条，则全部进入 build并在 manifest 中记录。不得因模型结果重新抽取 split。
+划分算法同样冻结：在每个联合 stratum 内，先按源文件内的原始 source-local `pairID` 排序，再使用 NumPy `default_rng(42)` 生成排列；前 `floor(0.20 × n_stratum)` 条进入 dev，其余进入 build。若某个 stratum 少于 5 条，则全部进入 build并在 manifest 中记录。不得因模型结果重新抽取 split。
+
+**Stage 2 预结果身份澄清（不改变数据成员、比例或训练行为）**：官方 `heuristics_train_set.txt` 与 `heuristics_evaluation_set.txt` 中的 `pairID` 是源文件局部编号，并非跨文件全局 ID；两个文件都使用 `ex0` 至 `ex29999`。加载后必须同时保留经语法验证的原始 source-local `pairID`，并立即生成按物理源分区限定的 artifact ID：train 文件使用 `hans_train::<pairID>`，evaluation 文件使用 `hans_evaluation::<pairID>`。原始 `pairID` 只用于同一源文件内的 split 排序与 deterministic cap hash；限定前缀不得进入该 hash，因此冻结的数据成员保持不变。逻辑 build 与 dev 都来自同一个 train 文件，必须共享 `hans_train::` 命名空间；不得分别使用 build/dev 前缀来掩盖泄漏。data manifest、loader batch 与 `hans_predictions.jsonl` 只输出限定后的 artifact ID，并逐行一致。
+
+源限定不能替代内容完整性检查。另以 `gold_label`、premise、hypothesis、heuristic 和 subcase 的精确 canonical JSON 计算不含 `pairID` 的 SHA-256 身份；任一物理/逻辑分区内的重复内容，或 build/dev/evaluation 之间的内容交集，均须 fail closed。`canonical_data_manifest_v4` 必须在 `hans.content_integrity` 中保存各分区有序内容哈希、计数、有序校验和、逐行 artifact-ID/content 联合校验和，以及重算后均为零的 duplicate/overlap counts。此澄清发生在任何成功 smoke 训练或 canonical 结果产生之前，不修改超参数、seed、数据上限、优化器或终点规则。
 
 用途：
 
@@ -148,7 +152,47 @@ gold_label × heuristic × subcase
 - dev：smoke/pilot 检查和实现验证；任何会改变本协议的开发决策必须先发布 addendum；
 - evaluation：canonical 模型完成后的一次性最终评估。
 
-任何样本不得同时出现在 build 和 dev。需要保存原始 row ID/pair ID 及 split checksum。
+任何样本不得同时出现在 build 和 dev。需要分别保留 source-local ranking key 与可逆 source-qualified artifact ID，并保存 split checksum 及 manifest 内的内容完整性证据。
+
+#### 4.2.1 Stage 2 预结果身份契约 v4 与官方语义锚
+
+`canonical_data_manifest_v4` 将三类证据分开保存并联合验证：
+
+- `hans.split_integrity`（`hans_split_integrity_v1`）保存 `seed=42`、算法 `source_local_id_sort_numpy_default_rng_per_stratum_v1`、按 manifest 顺序排列的 build/dev 原始 `exN` membership、计数和 split checksum。`small_strata` 中的成员也必须是未限定的原始 `exN`；不得写入 `hans_train::` 前缀。每条 raw ID 必须逐行映射到对应 build/dev qualified ID。
+- `hans.content_integrity`（`hans_content_integrity_v1`）使用 `sha256_canonical_json_utf8_v1`；字段严格为 `gold_label,premise,hypothesis,heuristic,subcase`，明确排除 `pairID`。每条记录自身的 `canonical_pair_id` 必须与平行 qualified-ID 数组逐行相等；分区内重复和分区间内容交集均必须为零。
+- `hans.selection_integrity`（`hans_selection_integrity_v1`）冻结 ranking key `source_local_pair_id`、算法 `sha256_seed_nul_source_local_id_stratified_round_robin_v1`、transform `hans_evaluation::<source_local_pair_id>`、seed 42、strata `gold_label,heuristic,subcase`、cap 与有序 raw-to-qualified 映射。cap 384 的确切有序 membership 由下列 checksum 固定；不能仅凭重算 manifest 内部 checksum 改换成员。
+
+官方两个已缓存 TSV 只读独立推导两次，采用 `official_tsv_canonical_json_utf8_sha256_v1`，得到以下完整锚值。任何 source file、split、content、joint binding 或 selection 锚不符均 fail closed：
+
+| 锚 | 完整 SHA-256 / 数值 |
+|---|---|
+| train source file | `49245bd5fdb0b185dcbfbf48f0f16513c62ad5bc9fad0b8800dc48d6818ee5cf` |
+| evaluation source file | `c55b62feef9913070e88f38938dc2492018c945ac81f70139346472494124e79` |
+| train-source/build/dev/evaluation counts | `30000 / 24000 / 6000 / 30000` |
+| official raw small strata | `[]` |
+| split checksum | `f2d240a1709481a8c37c0721104697469383e9ad49ed22496f9265633c9f129a` |
+| build raw IDs | `cf37089c0550410096e718e8c5a8f996650afe0afcef91c2660f27ce43560eab` |
+| dev raw IDs | `53f63723dfe459bfbd1b1ffe045af5d61beb3181ba37a379dfa96f92e08c1ba8` |
+| evaluation raw IDs | `495a55ae9bad6e464684b3b205ae6b591f5abb424dd5c0fdb98f2ad3db63be70` |
+| build qualified IDs | `cd8e7f745cc93703a71bd9c62b36647a8c3fe04596528f1b5a4be002ebe74bcc` |
+| dev qualified IDs | `f2d2fd8a0c43d8d1c449ab4ed990eedf7d3600afbdd38c0ac8ec0ccde07887ce` |
+| evaluation qualified IDs | `0a6d3beb1d2f182f2c7decd199bd7ca854baaf5fb1acf322297257d20bcf75a0` |
+| build ordered content | `3eea3fea671f926bcc3975dd01595d70842e37ae3ede45b8324d37b2a6dd6de1` |
+| dev ordered content | `d949b61e6d75889de00d1266ee73633bde9181e23be110005cb106c4328aa8d7` |
+| evaluation ordered content | `2b9b28d55b07245e3040aa0bcbcd14cd4a9598e4b55202b759d7f515aeb1cbfa` |
+| build ID/content joint | `c74c88f8edcfd138b99b21571e45fc0520c460eba194edc75dfd7da20f5bde5c` |
+| dev ID/content joint | `48f62af7a35125b87195fa0c6590918bf472de9b5b1315e303d9e10fd2ac214b` |
+| evaluation ID/content joint | `24eea2e3cb75c2910de142154803e8bdd98fcba6f12c61293de997faccff43ef` |
+| cap-384 selected raw IDs | `afa0aea6a159eb3b4f68077da8a665e1c277d47815d01398633af5cfe8e53b51` |
+| cap-384 selected qualified IDs | `2dad8b0ee67b7c3cbc8a621826c64cd7cb87bf78965a93e58c4519f092bd07c0` |
+| cap-384 raw-to-qualified mapping | `d755522b3f3e492d3543400f5fe07fd2ba354f62e89525f7170e3432cc178b96` |
+| full selected raw IDs | `495a55ae9bad6e464684b3b205ae6b591f5abb424dd5c0fdb98f2ad3db63be70` |
+| full selected qualified IDs | `0a6d3beb1d2f182f2c7decd199bd7ca854baaf5fb1acf322297257d20bcf75a0` |
+| full raw-to-qualified mapping | `fe500cf664524e54dfe55702418b03d717e5a25468f673b36fad5cdf5f82f2d9` |
+
+Stage 2 smoke data profile 必须完整且精确：schema 为 `canonical_data_manifest_v4`、scope 为 `stage2_smoke`、`data_seed=hans_split_seed=42`；MNLI train/validation full counts 为 100000/5000 且各 selected 96；HANS 为 24000/6000/30000 且 evaluation selected 384；e-SNLI、ANLI、SNLI-hard、WANLI 各 selected 128，并严格匹配冻结 source、split、preferred-ID fields、strata、seed 与 cap。一个仅含两个 HANS ID 的“stage2 smoke”不得通过。
+
+根 audit 的 `manifest_identity_summary` 必须逐字段精确等于 data manifest 派生的 `identity_counts`、`identity_checksums`、`split_integrity_summary`、`content_integrity_summary` 与 `selection_integrity_summary`；陈旧、手填或仅重算下游文件 checksum 的摘要均 fail closed。
 
 ### 4.3 禁止中间阶段读取官方 HANS evaluation 指标
 
@@ -219,11 +263,14 @@ checkpoint_hash
 
 - `data_seed` 不随 training seed 改变样本 ID；
 - HANS build/dev/evaluation 三者无样本交集；
+- HANS build/dev 使用 `hans_train::`、evaluation 使用 `hans_evaluation::`，且 source-local ID 重用不会被误判为样本重叠；
+- HANS 精确内容身份在分区内无重复、在分区间无交集；
 - 六个核心条件只改变其声明的实验因素；
 - 同一种子下双适配器变体加载同一 Phase-2 checkpoint hash；
 - `trim_ratio=0.2` 的实际语义为保留绝对值最大的 20% N-delta 元素；
 - 标准 JSON 序列化拒绝非有限数；
 - HANS aggregate metrics 可由逐样本文件完全复算；
+- 每个完成方法的 HANS prediction ID 顺序与 data manifest evaluation `selected_ids` 完全一致；
 - official HANS evaluation 未在中间训练日志中出现。
 
 ## 5. 冻结模型与训练配置

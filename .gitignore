@@ -7,6 +7,8 @@ __pycache__/
 .env
 venv/
 env/
+.venv-stage2/
+.uv-cache/
 
 # IDE and System files
 .vscode/
@@ -15,9 +17,21 @@ env/
 
 # Project specific outputs (adjust if your output folder has a different name)
 ties_unlearn_results/
+ties_results/canonical_v1/
+# Stage 2 runtime smoke roots and sibling monitor evidence
+ties_results/stage2_smoke/
+ties_results/.stage2_monitor/
+stage2_source.zip
+stage2_source_expectations.json
 
 # Downloaded result archives (redundant with the extracted ties_results/ tree)
 *.zip
 
 # Internal Team Documentation (Optional)
 Instructions.md
+
+# Local Git worktrees
+.worktrees/
+*.patch
+patch/如何应用与执行.md
+如何应用与执行.md

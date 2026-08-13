@@ -6,6 +6,7 @@ from dataclasses import asdict
 from typing import Dict, List, Optional
 
 from torch.optim import AdamW
+from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 from transformers import (
     AutoModelForSequenceClassification,
@@ -21,7 +22,7 @@ except ImportError:
 
 from configs.config import TrainConfig, LoRAConfig
 from data.dataloader import (
-    set_seed, make_mnli_loaders, make_hans_loader,
+    set_seed, make_mnli_loaders, make_hans_dev_loader, make_hans_evaluation_loader,
     make_phase2_biased_mixed_loader, make_phase2_5_analysis_loaders,
     make_esnli_test_loader, make_anli_test_loader, make_snli_hard_test_loader,
     make_wanli_test_loader,
@@ -32,31 +33,79 @@ from models.surgery import (
 )
 from models.ties_lora import set_model_forward_mode
 from models.analyzer import analyze_shortcut_layers
-from utils.optim_utils import _split_params, _make_scaler, _amp_enabled, _log_lora_norms, _save_checkpoint, _load_checkpoint
+from utils.optim_utils import (
+    _split_params, _make_scaler, _amp_enabled, _log_lora_norms,
+    _save_checkpoint, _load_checkpoint, _load_model_checkpoint,
+)
 from training.evaluate import eval_mnli, eval_hans, eval_esnli, eval_anli, eval_snli_hard, eval_wanli
+from training.weighting import compute_class_priors, resolve_weighting_mode, torch_phase3_weights
+from canonical.artifacts import sha256_file, write_json, write_jsonl
+from canonical.access_audit import record_final_evaluation_start
+from canonical.results import attach_final_metrics
 
 
-def train_ties_unlearn(cfg: TrainConfig, resume_from_checkpoint_path: Optional[str] = None):
+@torch.no_grad()
+def _estimate_class_priors(model, train_loader, device, cfg):
+    """Estimate frozen class-only weights from the fixed MNLI train subset."""
+    labels_all = []
+    probabilities_all = []
+    set_model_forward_mode(model, "phase2")
+    model.eval()
+    estimation_loader = DataLoader(
+        train_loader.dataset,
+        batch_size=cfg.batch_size,
+        shuffle=False,
+        drop_last=False,
+    )
+    for batch in estimation_loader:
+        labels = batch["label"].to(device)
+        inputs = {
+            "input_ids": batch["input_ids"].to(device),
+            "attention_mask": batch["attention_mask"].to(device),
+        }
+        logits = model(**inputs).logits
+        gold_probability = torch.softmax(logits.float(), dim=-1).gather(
+            1, labels.view(-1, 1)
+        ).squeeze(1)
+        labels_all.extend(labels.cpu().tolist())
+        probabilities_all.extend(gold_probability.cpu().tolist())
+    return compute_class_priors(
+        labels_all,
+        probabilities_all,
+        gamma=cfg.phase3_reweight_gamma,
+        classes=tuple(range(cfg.num_labels)),
+    )
+
+
+def train_ties_unlearn(
+    cfg: TrainConfig,
+    resume_from_checkpoint_path: Optional[str] = None,
+    *,
+    stop_after_phase2: bool = False,
+    shared_checkpoint_path: Optional[str] = None,
+    method_tag: Optional[str] = None,
+    checkpoint_hash: Optional[str] = None,
+):
     """
     Three-phase TIES-Unlearning Diff-LoRA training.
     Returns a dict of metrics for final comparison.
     """
-    set_seed(cfg.seed)
+    if resume_from_checkpoint_path and shared_checkpoint_path:
+        raise ValueError("Use either legacy resume or shared_checkpoint_path, not both.")
+    if stop_after_phase2 and shared_checkpoint_path:
+        raise ValueError("A shared branch cannot also prepare a shared checkpoint.")
+    set_seed(cfg.training_seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[TIES-Unlearn] device={device}")
 
     tok = AutoTokenizer.from_pretrained(cfg.model_name, use_fast=True)
     train_loader, val_loader = make_mnli_loaders(cfg, tok)
-    hans_loader = make_hans_loader(cfg, tok)
-    phase2_train_loader = make_phase2_biased_mixed_loader(cfg, tok)
-    esnli_loader = make_esnli_test_loader(cfg, tok)
-    anli_loader = make_anli_test_loader(cfg, tok)
-    snli_hard_loader = make_snli_hard_test_loader(cfg, tok)
-    try:
-        wanli_loader = make_wanli_test_loader(cfg, tok)
-    except Exception as e:
-        print(f"[TIES-Unlearn] WARNING: could not load WANLI ({e}); WANLI eval skipped (n/a).")
-        wanli_loader = None
+    if shared_checkpoint_path:
+        hans_dev_loader = None
+        phase2_train_loader = None
+    else:
+        hans_dev_loader = make_hans_dev_loader(cfg, tok)
+        phase2_train_loader = make_phase2_biased_mixed_loader(cfg, tok)
 
     # --- build model ---
     model = AutoModelForSequenceClassification.from_pretrained(
@@ -93,6 +142,26 @@ def train_ties_unlearn(cfg: TrainConfig, resume_from_checkpoint_path: Optional[s
     }
 
     start_phase = 1
+    class_prior_weights = None
+
+    if shared_checkpoint_path:
+        shared = _load_model_checkpoint(model, shared_checkpoint_path, device)
+        start_phase = 3
+        history = shared.get("history", history)
+        metrics["history"] = history
+        loaded_metrics = shared.get("phase_metrics", {})
+        metrics["phase1"] = loaded_metrics.get("phase1", {})
+        metrics["phase2"] = loaded_metrics.get("phase2", {})
+        raw_priors = shared.get("class_prior_weights")
+        if raw_priors is not None:
+            class_prior_weights = {int(key): float(value) for key, value in raw_priors.items()}
+        actual_hash = sha256_file(shared_checkpoint_path)
+        if checkpoint_hash is not None and checkpoint_hash != actual_hash:
+            raise ValueError(
+                f"Shared checkpoint hash mismatch: expected {checkpoint_hash}, got {actual_hash}."
+            )
+        checkpoint_hash = actual_hash
+        print("[TIES-Unlearn] Starting canonical branch from shared Phase-2 checkpoint.")
 
     if resume_from_checkpoint_path:
         # Dummy optimizer and scheduler for loading state_dict. Actual ones will be recreated.
@@ -167,16 +236,15 @@ def train_ties_unlearn(cfg: TrainConfig, resume_from_checkpoint_path: Optional[s
             print(f"  Phase1 Ep{ep+1}: loss={avg:.4f} val_acc={val:.4f}")
 
         p1_mnli = eval_mnli(model, val_loader, device)
-        p1_hans = eval_hans(model, hans_loader, device)
-        p1_esnli = eval_esnli(model, esnli_loader, device)
-        print(f"  Phase1 HANS: overall={p1_hans['hans_overall']:.4f} "
-              f"ent={p1_hans['hans_entailment']:.4f} "
-              f"non-ent={p1_hans['hans_non_entailment']:.4f}")
+        p1_hans_dev = eval_hans(model, hans_dev_loader, device)
+        print(f"  Phase1 HANS-dev: overall={p1_hans_dev['hans_overall']:.4f} "
+              f"ent={p1_hans_dev['hans_entailment']:.4f} "
+              f"non-ent={p1_hans_dev['hans_non_entailment']:.4f}")
         _log_lora_norms(model)
-        metrics["phase1"] = {"mnli": p1_mnli, "hans": p1_hans, "esnli": p1_esnli}
+        metrics["phase1"] = {"mnli": p1_mnli, "hans_dev": p1_hans_dev}
 
         if cfg.save_checkpoints_per_phase:
-            phase1_metrics_to_save = {"mnli": p1_mnli, "hans": p1_hans, "esnli": p1_esnli}
+            phase1_metrics_to_save = {"mnli": p1_mnli, "hans_dev": p1_hans_dev}
             if cfg.checkpoint_dir:
                 checkpoint_path_p1 = os.path.join(cfg.checkpoint_dir, f"phase1_checkpoint_epoch{cfg.phase1_epochs}.pt")
             else:
@@ -240,22 +308,61 @@ def train_ties_unlearn(cfg: TrainConfig, resume_from_checkpoint_path: Optional[s
             print(f"  Phase2 Ep{ep+1}: loss={avg:.4f} val_acc={val:.4f}")
 
         p2_mnli = eval_mnli(model, val_loader, device)
-        p2_hans = eval_hans(model, hans_loader, device)
-        p2_esnli = eval_esnli(model, esnli_loader, device)
-        print(f"  Phase2 HANS: overall={p2_hans['hans_overall']:.4f} "
-              f"ent={p2_hans['hans_entailment']:.4f} "
-              f"non-ent={p2_hans['hans_non_entailment']:.4f}")
+        p2_hans_dev = eval_hans(model, hans_dev_loader, device)
+        print(f"  Phase2 HANS-dev: overall={p2_hans_dev['hans_overall']:.4f} "
+              f"ent={p2_hans_dev['hans_entailment']:.4f} "
+              f"non-ent={p2_hans_dev['hans_non_entailment']:.4f}")
         _log_lora_norms(model)
-        metrics["phase2"] = {"mnli": p2_mnli, "hans": p2_hans, "esnli": p2_esnli}
+        metrics["phase2"] = {"mnli": p2_mnli, "hans_dev": p2_hans_dev}
 
         if cfg.save_checkpoints_per_phase:
-            phase2_metrics_to_save = {"mnli": p2_mnli, "hans": p2_hans, "esnli": p2_esnli}
+            phase2_metrics_to_save = {"mnli": p2_mnli, "hans_dev": p2_hans_dev}
             if cfg.checkpoint_dir:
                 checkpoint_path_p2 = os.path.join(cfg.checkpoint_dir, f"phase2_checkpoint_epoch{cfg.phase2_epochs}.pt")
             else:
                 run_dir = os.path.join(cfg.output_dir, cfg.experiment_name)
                 checkpoint_path_p2 = os.path.join(run_dir, "checkpoints", f"phase2_checkpoint_epoch{cfg.phase2_epochs}.pt")
             _save_checkpoint(model, opt, sch, cfg.phase2_epochs, 2, checkpoint_path_p2, history, phase2_metrics_to_save)
+
+    if stop_after_phase2:
+        class_prior_weights = _estimate_class_priors(model, train_loader, device, cfg)
+        if cfg.checkpoint_dir:
+            shared_path = os.path.join(cfg.checkpoint_dir, "shared_phase2_checkpoint.pt")
+        else:
+            shared_path = os.path.join(
+                cfg.output_dir,
+                cfg.experiment_name,
+                "checkpoints",
+                "shared_phase2_checkpoint.pt",
+            )
+        phase_metrics = {"phase1": metrics["phase1"], "phase2": metrics["phase2"]}
+        _save_checkpoint(
+            model,
+            opt,
+            sch,
+            cfg.phase2_epochs,
+            2,
+            shared_path,
+            history,
+            phase_metrics,
+            metadata={
+                "config": asdict(cfg),
+                "class_prior_weights": {
+                    str(label): value for label, value in class_prior_weights.items()
+                },
+                "checkpoint_role": "canonical_shared_phase2",
+            },
+        )
+        shared_hash = sha256_file(shared_path)
+        return {
+            "method": "canonical_shared_phase2",
+            "config": asdict(cfg),
+            "phase1": metrics["phase1"],
+            "phase2": metrics["phase2"],
+            "class_prior_weights": class_prior_weights,
+            "checkpoint_path": shared_path,
+            "checkpoint_hash": shared_hash,
+        }
 
     if start_phase <= 3:
         all_layer_tags = list(get_ties_modules_by_layer(model).keys())
@@ -269,7 +376,7 @@ def train_ties_unlearn(cfg: TrainConfig, resume_from_checkpoint_path: Optional[s
             print("[Phase2.5] No-TIES ablation enabled. All layers fall back to P-only in Phase 3.")
         elif cfg.random_layer_selection:
             # Ablation: pick layer_selection_topk layers uniformly at random (seeded for reproducibility).
-            rng = random.Random(cfg.seed)
+            rng = random.Random(cfg.training_seed)
             k = min(int(cfg.layer_selection_topk), len(all_layer_tags))
             shortcut_layers = sorted(rng.sample(all_layer_tags, k), key=_layer_index_from_tag)
             configure_ties_layers(model, shortcut_layers)
@@ -353,10 +460,17 @@ def train_ties_unlearn(cfg: TrainConfig, resume_from_checkpoint_path: Optional[s
         total_steps = cfg.phase3_epochs * len(train_loader)
         sch = get_linear_schedule_with_warmup(opt, int(cfg.warmup_ratio * total_steps), total_steps)
         scaler = _make_scaler(cfg.fp16, device)
-        if cfg.phase3_debias_reweight:
+        weighting_mode = resolve_weighting_mode(cfg)
+        if weighting_mode == "class_prior" and class_prior_weights is None:
+            raise ValueError("class_prior weighting requires priors from the shared Phase-2 checkpoint.")
+        if weighting_mode == "n_guided":
             print(f"[Phase3] debias reweighting ON (gamma={cfg.phase3_reweight_gamma}): "
                   f"down-weighting examples the frozen N (shortcut) path already solves, "
                   f"so Phase-3 cannot recover MNLI via the shortcut.")
+        elif weighting_mode == "class_prior":
+            print(f"[Phase3] class-prior reweighting ON: {class_prior_weights}")
+        else:
+            print("[Phase3] example reweighting OFF (ordinary cross entropy).")
 
         for ep in range(cfg.phase3_epochs):
             model.train()
@@ -368,20 +482,25 @@ def train_ties_unlearn(cfg: TrainConfig, resume_from_checkpoint_path: Optional[s
                     batch["labels"] = batch.pop("label")
                 opt.zero_grad(set_to_none=True)
                 with autocast(device_type=device.type, enabled=_amp_enabled(cfg.fp16, device)):
-                    if cfg.phase3_debias_reweight:
-                        # Fix (A): score each example with the FROZEN N (shortcut) path.
-                        # High N-confidence on the gold label => the shortcut alone solves it
-                        # => down-weight, so recovering MNLI here can't re-learn the shortcut.
+                    if weighting_mode != "none":
                         inputs = {k: v for k, v in batch.items() if k != "labels"}
                         labels = batch["labels"]
-                        with torch.no_grad():
-                            set_model_forward_mode(model, "phase2")   # base + ΔN only
-                            n_logits = model(**inputs).logits
-                            set_model_forward_mode(model, "eval")      # back to merged
-                            p_n = torch.softmax(n_logits.float(), dim=-1).gather(
-                                1, labels.view(-1, 1)).squeeze(1)
-                            w = (1.0 - p_n).clamp_min(0.0).pow(cfg.phase3_reweight_gamma)
-                            w = w * (w.numel() / w.sum().clamp_min(1e-6))  # mean-1 normalize
+                        n_gold_probabilities = None
+                        if weighting_mode == "n_guided":
+                            with torch.no_grad():
+                                set_model_forward_mode(model, "phase2")
+                                n_logits = model(**inputs).logits
+                                set_model_forward_mode(model, "eval")
+                                n_gold_probabilities = torch.softmax(
+                                    n_logits.float(), dim=-1
+                                ).gather(1, labels.view(-1, 1)).squeeze(1)
+                        w = torch_phase3_weights(
+                            weighting_mode,
+                            labels,
+                            n_gold_probabilities=n_gold_probabilities,
+                            class_priors=class_prior_weights,
+                            gamma=cfg.phase3_reweight_gamma,
+                        )
                         logits = model(**inputs).logits
                         per = torch.nn.functional.cross_entropy(logits, labels, reduction="none")
                         loss = (per * w).mean()
@@ -404,22 +523,78 @@ def train_ties_unlearn(cfg: TrainConfig, resume_from_checkpoint_path: Optional[s
             history["phase"].append(3)
             print(f"  Phase3 Ep{ep+1}: loss={avg:.4f} val_acc={val:.4f}")
 
+    run_dir = os.path.join(cfg.output_dir, cfg.experiment_name)
+    os.makedirs(run_dir, exist_ok=True)
+    final_checkpoint_hash = checkpoint_hash
+    if method_tag is not None:
+        state_dir = os.path.join(run_dir, "checkpoints")
+        os.makedirs(state_dir, exist_ok=True)
+        final_state_path = os.path.join(state_dir, "final_model_state.pt")
+        torch.save(
+            {
+                "model_state_dict": model.state_dict(),
+                "config": asdict(cfg),
+                "method_tag": method_tag,
+                "training_seed": cfg.training_seed,
+                "source_phase2_checkpoint_hash": checkpoint_hash,
+            },
+            final_state_path,
+        )
+        final_checkpoint_hash = sha256_file(final_state_path)
+
+    # Official HANS and all other final-only OOD loaders are constructed only
+    # after the frozen branch has finished training and its final state is saved.
+    record_final_evaluation_start(cfg)
+    hans_loader = make_hans_evaluation_loader(cfg, tok)
+    esnli_loader = make_esnli_test_loader(cfg, tok)
+    anli_loader = make_anli_test_loader(cfg, tok)
+    snli_hard_loader = make_snli_hard_test_loader(cfg, tok)
+    try:
+        wanli_loader = make_wanli_test_loader(cfg, tok)
+    except Exception as e:
+        print(f"[TIES-Unlearn] WARNING: could not load WANLI ({e}); WANLI eval skipped (n/a).")
+        wanli_loader = None
+
     p3_mnli = eval_mnli(model, val_loader, device)
-    p3_hans = eval_hans(model, hans_loader, device)
+    hans_predictions = None
+    if method_tag is not None:
+        p3_hans, hans_predictions = eval_hans(
+            model,
+            hans_loader,
+            device,
+            prediction_context={
+                "training_seed": cfg.training_seed,
+                "method_tag": method_tag,
+                "checkpoint_hash": final_checkpoint_hash,
+            },
+        )
+    else:
+        p3_hans = eval_hans(model, hans_loader, device)
     p3_esnli = eval_esnli(model, esnli_loader, device)
     p3_anli = eval_anli(model, anli_loader, device)
     p3_snli_hard = eval_snli_hard(model, snli_hard_loader, device)
     p3_wanli = (eval_wanli(model, wanli_loader, device)
-                if wanli_loader is not None else {"wanli_accuracy": float("nan")})
+                if wanli_loader is not None else {
+                    "wanli_accuracy": None if method_tag is not None else float("nan")
+                })
     print(f"  Phase3 HANS: overall={p3_hans['hans_overall']:.4f} "
           f"ent={p3_hans['hans_entailment']:.4f} "
           f"non-ent={p3_hans['hans_non_entailment']:.4f}")
+    wanli_display = (
+        f"{p3_wanli['wanli_accuracy']:.4f}"
+        if p3_wanli["wanli_accuracy"] is not None else "n/a"
+    )
     print(f"  Phase3 OOD: ANLI={p3_anli['anli_accuracy']:.4f} "
           f"SNLI-hard={p3_snli_hard['snli_hard_accuracy']:.4f} "
-          f"WANLI={p3_wanli['wanli_accuracy']:.4f}")
+          f"WANLI={wanli_display}")
     _log_lora_norms(model)
     metrics["phase3"] = {"mnli": p3_mnli, "hans": p3_hans, "esnli": p3_esnli,
                          "anli": p3_anli, "snli_hard": p3_snli_hard, "wanli": p3_wanli}
+    if method_tag is not None:
+        metrics["checkpoint_provenance"] = {
+            "source_phase2_checkpoint_hash": checkpoint_hash,
+            "final_checkpoint_hash": final_checkpoint_hash,
+        }
 
     if cfg.record_branch_only_metrics:
         print("  Recording final branch-only evaluations (P-only and N-only).")
@@ -451,13 +626,15 @@ def train_ties_unlearn(cfg: TrainConfig, resume_from_checkpoint_path: Optional[s
         }
 
     # --- save ---
-    run_dir = os.path.join(cfg.output_dir, cfg.experiment_name)
-    os.makedirs(run_dir, exist_ok=True)
-
     metrics["history"] = history
-
-    with open(os.path.join(run_dir, "metrics.json"), "w", encoding="utf-8") as f:
-        json.dump(metrics, f, indent=2, ensure_ascii=False)
+    if method_tag is not None:
+        metrics = attach_final_metrics(metrics, metrics["phase3"])
+        write_json(os.path.join(run_dir, "metrics.json"), metrics)
+        write_jsonl(os.path.join(run_dir, "hans_predictions.jsonl"), hans_predictions)
+        write_json(os.path.join(run_dir, "selected_layers.json"), metrics.get("phase2_5", {}))
+    else:
+        with open(os.path.join(run_dir, "metrics.json"), "w", encoding="utf-8") as f:
+            json.dump(metrics, f, indent=2, ensure_ascii=False)
 
     if cfg.save_checkpoints:
         ckpt_dir = os.path.join(run_dir, "model")
